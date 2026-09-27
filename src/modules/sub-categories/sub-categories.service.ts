@@ -1,5 +1,7 @@
+import { ImageWriteService } from '../../storage/image-write.service.js';
 import {
   ConflictException,
+  HttpException,
   Inject,
   Injectable,
   InternalServerErrorException,
@@ -18,27 +20,33 @@ const orderBy = [
 
 @Injectable()
 export class SubCategoriesService {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(ImageWriteService) private readonly images: ImageWriteService,
+  ) {}
 
-  async create(dto: CreateSubCategoryDto) {
+  async create(dto: CreateSubCategoryDto, file?: Express.Multer.File) {
     await this.requireCategory(dto.categoryId);
-    return this.query(() =>
-      this.prisma.subCategory.create({
-        data: {
-          categoryId: dto.categoryId,
-          name: dto.name,
-          description: dto.description,
-          imageUrl: dto.imageUrl,
-          color: dto.color,
-          type: dto.type,
-          price: dto.price,
-          stock: dto.stock,
-          isActive: dto.isActive,
-          sortOrder: dto.sortOrder,
-        },
-        include: { category: true },
-      }),
-    );
+    return this.images.save(file, 'subcategories', async (key) => ({
+      result: await this.query(() =>
+        this.prisma.subCategory.create({
+          data: {
+            categoryId: dto.categoryId,
+            name: dto.name,
+            description: dto.description,
+
+            imageKey: key,
+            color: dto.color,
+            type: dto.type,
+            price: dto.price,
+            stock: dto.stock,
+            isActive: dto.isActive,
+            sortOrder: dto.sortOrder,
+          },
+          include: { category: true },
+        }),
+      ),
+    }));
   }
 
   findAll() {
@@ -71,41 +79,61 @@ export class SubCategoriesService {
     if (!category) throw new NotFoundException('Category not found');
   }
 
-  async update(id: string, dto: UpdateSubCategoryDto) {
-    await this.findOne(id);
+  async update(
+    id: string,
+    dto: UpdateSubCategoryDto,
+    file?: Express.Multer.File,
+  ) {
+    const previous = await this.findOne(id);
     if (dto.categoryId !== undefined)
       await this.requireCategory(dto.categoryId);
-    return this.query(() =>
-      this.prisma.subCategory.update({
-        where: { id },
-        data: {
-          categoryId: dto.categoryId,
-          name: dto.name,
-          description: dto.description,
-          imageUrl: dto.imageUrl,
-          color: dto.color,
-          type: dto.type,
-          price: dto.price,
-          stock: dto.stock,
-          isActive: dto.isActive,
-          sortOrder: dto.sortOrder,
-        },
-        include: { category: true },
-      }),
-    );
+    return this.images.save(file, 'subcategories', async (key) => ({
+      result: await this.query(() =>
+        this.prisma.subCategory.update({
+          where: {
+            id,
+            ...(key ? { imageKey: previous?.imageKey ?? null } : {}),
+          },
+          data: {
+            categoryId: dto.categoryId,
+            name: dto.name,
+            description: dto.description,
+
+            imageKey: key,
+            color: dto.color,
+            type: dto.type,
+            price: dto.price,
+            stock: dto.stock,
+            isActive: dto.isActive,
+            sortOrder: dto.sortOrder,
+          },
+          include: { category: true },
+        }),
+      ),
+      oldKeys: key ? [previous?.imageKey] : [],
+    }));
   }
 
   async remove(id: string): Promise<void> {
-    await this.query(() =>
-      this.prisma.subCategory.delete({ where: { id }, select: { id: true } }),
+    const record = await this.query(() =>
+      this.prisma.subCategory.delete({
+        where: { id },
+        select: { imageKey: true },
+      }),
     );
+    await this.images.cleanup([record.imageKey]);
   }
 
   private async query<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation();
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       if (error instanceof Prisma.PrismaClientKnownRequestError) {
+        if (error.code === 'P2034')
+          throw new ConflictException(
+            'Record changed concurrently; please retry',
+          );
         if (error.code === 'P2002')
           throw new ConflictException('SubCategory already exists');
         if (error.code === 'P2025')

@@ -1,4 +1,4 @@
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -12,6 +12,8 @@ import {
 import { PrismaService } from '../../database/prisma.service.js';
 import { Prisma, OrderStatus } from '../../generated/prisma/client.js';
 import { productItemsSelect } from '../products/product-items.select.js';
+import { StorageService } from '../../storage/storage.service.js';
+import { ImageWriteService } from '../../storage/image-write.service.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.type.js';
 import type { CreateOrderDto } from './dto/create-order.dto.js';
 import type { UpdateOrderDto } from './dto/update-order.dto.js';
@@ -38,6 +40,8 @@ function orderSelect(user: AuthenticatedUser) {
     paymentType: true,
     paymentStatus: true,
     totalPrice: true,
+    designSnapshot: true,
+    designPreviewKey: true,
     firstName: true,
     lastName: true,
     phone: true,
@@ -63,11 +67,19 @@ function orderSelect(user: AuthenticatedUser) {
         id: true,
         name: true,
         description: true,
-        imageUrl: true,
+
+        imageKey: true,
+        designPreviewKey: true,
         itemCount: true,
         price: true,
         category: {
-          select: { id: true, name: true, description: true, imageUrl: true },
+          select: {
+            id: true,
+            name: true,
+            description: true,
+
+            imageKey: true,
+          },
         },
         items: productItemsSelect,
       },
@@ -77,7 +89,11 @@ function orderSelect(user: AuthenticatedUser) {
 
 @Injectable()
 export class OrdersService {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(StorageService) private readonly storage: StorageService,
+    @Inject(ImageWriteService) private readonly images: ImageWriteService,
+  ) {}
 
   async create(dto: CreateOrderDto, user: AuthenticatedUser) {
     const { firstName, lastName, phone, country, address, postalCode } = user;
@@ -95,8 +111,9 @@ export class OrdersService {
     // Retry the ENTIRE transaction after a unique collision or serialization/deadlock error.
     // PostgreSQL cannot continue a transaction after a failed statement.
     for (let attempt = 0; attempt < 5; attempt++) {
+      const copiedKeys: string[] = [];
       try {
-        return await this.prisma.$transaction(
+        const created = await this.prisma.$transaction(
           async (tx) => {
             // ProductsService.update uses the same lock before editing components.
             await tx.$queryRaw`SELECT id FROM products WHERE id = ${dto.productId} FOR UPDATE`;
@@ -105,15 +122,36 @@ export class OrdersService {
               select: {
                 id: true,
                 createdById: true,
-                items: {
+                name: true,
+                description: true,
+                imageKey: true,
+                designPreviewKey: true,
+                category: {
                   select: {
+                    id: true,
+                    name: true,
+                    description: true,
+                    imageKey: true,
+                  },
+                },
+                items: {
+                  orderBy: [{ position: 'asc' }, { id: 'asc' }],
+                  select: {
+                    id: true,
                     subCategoryId: true,
                     quantity: true,
                     unitPrice: true,
+                    position: true,
                     subCategory: {
                       select: {
                         id: true,
                         name: true,
+                        categoryId: true,
+                        description: true,
+                        imageKey: true,
+                        color: true,
+                        type: true,
+                        price: true,
                         stock: true,
                         isActive: true,
                       },
@@ -165,8 +203,79 @@ export class OrdersService {
                 this.insufficientStock(component, requestedQuantity);
             }
 
+            const orderId = randomUUID();
+            const copies = new Map<string, string>();
+            const copyImage = async (source?: string | null) => {
+              if (!source) return null;
+              const existing = copies.get(source);
+              if (existing) return existing;
+              const { key } = await this.storage.copy(
+                source,
+                'orders/' + orderId,
+              );
+              copiedKeys.push(key);
+              copies.set(source, key);
+              return key;
+            };
+            const previewKey = await copyImage(product.designPreviewKey);
+            const snapshot = {
+              id: product.id,
+              name: product.name,
+              description: product.description,
+              imageKey: await copyImage(product.imageKey),
+              designPreviewKey: previewKey,
+              price: totalPrice,
+              itemCount: product.items.reduce(
+                (sum, item) => sum + item.quantity,
+                0,
+              ),
+              category: product.category
+                ? {
+                    ...product.category,
+                    imageKey: await copyImage(product.category.imageKey),
+                  }
+                : null,
+              items: [] as {
+                id: string;
+                subCategoryId: string;
+                quantity: number;
+                position: number | null;
+                unitPrice: number;
+                subCategory: {
+                  id: string;
+                  categoryId: string;
+                  name: string;
+                  description: string | null;
+                  imageKey: string | null;
+                  color: string | null;
+                  type: string | null;
+                  price: number;
+                };
+              }[],
+            };
+            for (const item of product.items) {
+              const component = item.subCategory;
+              snapshot.items.push({
+                id: item.id,
+                subCategoryId: item.subCategoryId,
+                quantity: item.quantity,
+                position: item.position,
+                unitPrice: item.unitPrice,
+                subCategory: {
+                  id: component.id,
+                  categoryId: component.categoryId,
+                  name: component.name,
+                  description: component.description,
+                  imageKey: await copyImage(component.imageKey),
+                  color: component.color,
+                  type: component.type,
+                  price: component.price,
+                },
+              });
+            }
             const order = await tx.order.create({
               data: {
+                id: orderId,
                 userId: user.id,
                 productId: product.id,
                 orderNumber:
@@ -178,6 +287,12 @@ export class OrdersService {
                 paymentStatus: 'UNPAID',
                 paymentType: dto.paymentType,
                 totalPrice,
+                designPreviewKey: previewKey,
+                designSnapshot: {
+                  version: 1,
+                  product: snapshot,
+                  ownedImageKeys: copiedKeys,
+                },
                 firstName,
                 lastName,
                 phone,
@@ -218,9 +333,19 @@ export class OrdersService {
             }
             return order;
           },
-          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+            timeout: 120000,
+          },
         );
+        return this.snapshotResponse(created);
       } catch (error) {
+        // A rolled-back transaction owns no images. Clean every copy before retrying.
+        try {
+          await this.images.cleanup(copiedKeys);
+        } catch {
+          /* Cleanup helper logs safe keys for operator recovery; preserve original error. */
+        }
         if (
           error instanceof Prisma.PrismaClientKnownRequestError &&
           ['P2002', 'P2034'].includes(error.code)
@@ -284,7 +409,7 @@ export class OrdersService {
       ]),
     );
     return {
-      data,
+      data: data.map((order) => this.snapshotResponse(order)),
       meta: {
         page: dto.page,
         limit: dto.limit,
@@ -302,7 +427,7 @@ export class OrdersService {
       }),
     );
     if (!order) throw new NotFoundException('Order not found');
-    return order;
+    return this.snapshotResponse(order);
   }
 
   update(id: string, dto: UpdateOrderDto, user: AuthenticatedUser) {
@@ -313,7 +438,7 @@ export class OrdersService {
         data: { adminNotes: dto.adminNotes, finalImageUrl: dto.finalImageUrl },
         select: orderSelect(user),
       }),
-    );
+    ).then((order) => this.snapshotResponse(order));
   }
 
   async updateStatus(
@@ -336,7 +461,7 @@ export class OrdersService {
           select: orderSelect(user),
         }),
       true,
-    );
+    ).then((order) => this.snapshotResponse(order));
   }
 
   updatePaymentStatus(
@@ -351,14 +476,50 @@ export class OrdersService {
         data: { paymentStatus: dto.paymentStatus },
         select: orderSelect(user),
       }),
-    );
+    ).then((order) => this.snapshotResponse(order));
   }
 
   async remove(id: string, user: AuthenticatedUser): Promise<void> {
     this.requireAdmin(user);
-    await this.query(() =>
-      this.prisma.order.delete({ where: { id }, select: { id: true } }),
+    const record = await this.query(() =>
+      this.prisma.order.delete({
+        where: { id },
+        select: { id: true, designSnapshot: true, designPreviewKey: true },
+      }),
     );
+    const snapshot = record.designSnapshot;
+    const ownedKeys =
+      snapshot &&
+      typeof snapshot === 'object' &&
+      !Array.isArray(snapshot) &&
+      Array.isArray(snapshot.ownedImageKeys)
+        ? snapshot.ownedImageKeys
+        : [];
+    await this.images.cleanup(
+      [...ownedKeys, record.designPreviewKey].filter(
+        (key): key is string =>
+          typeof key === 'string' &&
+          key.startsWith('orders/' + record.id + '/'),
+      ),
+    );
+  }
+
+  private snapshotResponse<
+    T extends { designSnapshot?: Prisma.JsonValue | null; product?: unknown },
+  >(order: T): T {
+    const snapshot = order.designSnapshot;
+    if (
+      snapshot &&
+      typeof snapshot === 'object' &&
+      !Array.isArray(snapshot) &&
+      snapshot.version === 1 &&
+      snapshot.product &&
+      typeof snapshot.product === 'object' &&
+      !Array.isArray(snapshot.product)
+    )
+      return { ...order, product: snapshot.product } as T;
+    // Legacy orders have no verifiable historical snapshot. Preserve existing behavior.
+    return order;
   }
 
   private requireAdmin(user: AuthenticatedUser) {

@@ -6,11 +6,15 @@ import { OrdersModule } from './modules/orders/orders.module.js';
 import { CategoriesModule } from './modules/categories/categories.module.js';
 import { SubCategoriesModule } from './modules/sub-categories/sub-categories.module.js';
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { StorageModule } from './storage/storage.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 
 @Module({
   imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    StorageModule,
     DatabaseModule,
     AuthModule,
     UsersModule,

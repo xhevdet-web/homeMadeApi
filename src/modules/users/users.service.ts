@@ -10,6 +10,7 @@ import { PrismaService } from '../../database/prisma.service.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import type { CreateUserDto } from './dto/create-user.dto.js';
 import type { UpdateUserDto } from './dto/update-user.dto.js';
+import type { UpdateProfileDto } from './dto/update-profile.dto.js';
 
 const userSelect = {
   id: true,
@@ -64,6 +65,17 @@ export class UsersService {
     );
     if (!user) throw new NotFoundException('User not found');
     return user;
+  }
+
+  updateProfile(id: string, dto: UpdateProfileDto) {
+    return this.update(id, {
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      phone: dto.phone,
+      country: dto.country,
+      address: dto.address,
+      postalCode: dto.postalCode,
+    });
   }
 
   update(id: string, dto: UpdateUserDto) {

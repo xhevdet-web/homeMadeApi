@@ -17,7 +17,8 @@ export const productItemsSelect = {
         categoryId: true,
         name: true,
         description: true,
-        imageUrl: true,
+
+        imageKey: true,
         color: true,
         type: true,
         price: true,

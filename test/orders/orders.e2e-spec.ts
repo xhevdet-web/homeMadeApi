@@ -7,6 +7,7 @@ import { OrdersModule } from '../../src/modules/orders/orders.module.js';
 import { PrismaService } from '../../src/database/prisma.service.js';
 import { Prisma } from '../../src/generated/prisma/client.js';
 import { setupApp } from '../../src/config/setup-app.js';
+import { StorageService } from '../../src/storage/storage.service.js';
 
 const dbError = (code: string) =>
   new Prisma.PrismaClientKnownRequestError('Private SQL and credentials', {
@@ -90,6 +91,12 @@ describe('Orders HTTP', () => {
     delete: vi.fn(),
   };
   const subCategory = { updateMany: vi.fn(), findUnique: vi.fn() };
+  const storage = {
+    copy: vi.fn(),
+    delete: vi.fn(),
+    getPublicUrl: (key?: string | null) =>
+      key ? 'https://images.example.test/' + key : null,
+  };
   const prisma = {
     user,
     product,
@@ -128,6 +135,8 @@ describe('Orders HTTP', () => {
     );
     vi.stubEnv('JWT_ACCESS_EXPIRES_IN', '60m');
     const module = await Test.createTestingModule({ imports: [OrdersModule] })
+      .overrideProvider(StorageService)
+      .useValue(storage)
       .overrideProvider(PrismaService)
       .useValue(prisma)
       .compile();
@@ -140,6 +149,10 @@ describe('Orders HTTP', () => {
   });
   beforeEach(() => {
     vi.resetAllMocks();
+    storage.copy.mockImplementation(async (key: string, folder: string) => ({
+      key: folder + '/' + key.replaceAll('/', '-'),
+    }));
+    storage.delete.mockResolvedValue(undefined);
     prisma.$transaction.mockImplementation(
       (operation: (tx: typeof prisma) => Promise<unknown>) => operation(prisma),
     );
@@ -255,7 +268,8 @@ describe('Orders HTTP', () => {
         categoryId: true,
         name: true,
         description: true,
-        imageUrl: true,
+
+        imageKey: true,
         color: true,
         type: true,
         price: true,
@@ -330,6 +344,8 @@ describe('Orders HTTP', () => {
     'userId',
     'orderNumber',
     'totalPrice',
+    'designSnapshot',
+    'designPreviewKey',
     'stock',
     'itemCount',
     'unitPrice',
@@ -531,7 +547,7 @@ describe('Orders HTTP', () => {
     expect((await remove().expect(204)).text).toBe('');
     expect(order.delete).toHaveBeenCalledWith({
       where: { id },
-      select: { id: true },
+      select: { id: true, designSnapshot: true, designPreviewKey: true },
     });
   });
 
@@ -571,5 +587,145 @@ describe('Orders HTTP', () => {
     order.create.mockRejectedValue(dbError(code));
     const response = await post(body).expect(status);
     expect(response.text).not.toContain('Private SQL');
+  });
+
+  it('places an Order with its own preview and immutable component metadata', async () => {
+    product.findUnique.mockResolvedValue({
+      ...productRecord,
+      name: 'Original bracelet',
+      description: null,
+      imageKey: null,
+      designPreviewKey: 'designs/preview.png',
+      category: {
+        id: otherId,
+        name: 'Bracelets',
+        description: null,
+        imageKey: null,
+      },
+      items: productRecord.items.map((item, index) => ({
+        ...item,
+        id: otherId + index,
+        position: index,
+        subCategory: {
+          ...item.subCategory,
+          categoryId: otherId,
+          description: null,
+          color: 'gold',
+          type: 'glass',
+          price: 999,
+          imageKey: 'subcategories/bead.png',
+        },
+      })),
+    });
+    order.create.mockImplementation(
+      async ({ data }: { data: Record<string, unknown> }) => ({
+        ...record,
+        ...data,
+        product: { name: 'Live relation must not be used' },
+      }),
+    );
+    const response = await post(body).expect(201);
+    expect(response.body.product.name).toBe('Original bracelet');
+    expect(response.body.product.items[0]).toMatchObject({
+      quantity: 3,
+      unitPrice: 999,
+      position: 0,
+      subCategory: { name: 'Bead', color: 'gold', type: 'glass' },
+    });
+    expect(response.body.product.items[0].subCategory).not.toHaveProperty(
+      'stock',
+    );
+    expect(response.body.designPreviewKey).toMatch(/^orders\//);
+    expect(response.body.product.designPreviewUrl).toBe(
+      'https://images.example.test/' + response.body.designPreviewKey,
+    );
+    expect(storage.copy).toHaveBeenCalledTimes(2);
+    expect(storage.delete).not.toHaveBeenCalled();
+  });
+
+  it('returns the saved Order snapshot even when the live Product changes', async () => {
+    const preview = 'orders/' + id + '/preview.png';
+    const saved = {
+      ...record,
+      designPreviewKey: preview,
+      designSnapshot: {
+        version: 1,
+        ownedImageKeys: [preview],
+        product: {
+          id: productId,
+          name: 'Original design',
+          designPreviewKey: preview,
+          items: [
+            {
+              quantity: 3,
+              unitPrice: 999,
+              subCategory: { name: 'Original bead', color: 'gold' },
+            },
+          ],
+        },
+      },
+      product: {
+        id: productId,
+        name: 'Changed live Product',
+        designPreviewKey: 'designs/new.png',
+      },
+    };
+    order.findUnique.mockResolvedValue(saved);
+    const details = await get('/' + id).expect(200);
+    expect(details.body.product.name).toBe('Original design');
+    expect(details.body.product.designPreviewUrl).toBe(
+      'https://images.example.test/' + preview,
+    );
+    expect(details.body.product.items[0].subCategory.name).toBe(
+      'Original bead',
+    );
+    admin();
+    order.update.mockResolvedValue(saved);
+    expect(
+      (await patch('/status', { status: 'CREATING' }).expect(200)).body.product
+        .name,
+    ).toBe('Original design');
+    expect(
+      (await patch('/payment-status', { paymentStatus: 'PAID' }).expect(200))
+        .body.product.name,
+    ).toBe('Original design');
+    expect(storage.copy).not.toHaveBeenCalled();
+  });
+
+  it('cleans copied images when order creation fails without deleting sources', async () => {
+    product.findUnique.mockResolvedValue({
+      ...productRecord,
+      designPreviewKey: 'designs/preview.png',
+    });
+    order.create.mockRejectedValue(dbError('P1001'));
+    await post(body).expect(500);
+    expect(storage.copy).toHaveBeenCalledTimes(1);
+    expect(storage.delete).toHaveBeenCalledExactlyOnceWith(
+      expect.stringMatching(/^orders\//),
+    );
+    expect(storage.delete).not.toHaveBeenCalledWith('designs/preview.png');
+  });
+
+  it('deletes only Order-owned snapshot images after the Order is deleted', async () => {
+    admin();
+    const preview = 'orders/' + id + '/preview.png';
+    order.delete.mockResolvedValue({
+      id,
+      designPreviewKey: preview,
+      designSnapshot: {
+        version: 1,
+        product: {},
+        ownedImageKeys: [
+          preview,
+          'orders/' + id + '/bead.png',
+          'designs/source.png',
+        ],
+      },
+    });
+    await remove().expect(204);
+    expect(storage.delete.mock.calls).toEqual([
+      [preview],
+      ['orders/' + id + '/bead.png'],
+    ]);
   });
 });

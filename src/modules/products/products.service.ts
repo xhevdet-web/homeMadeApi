@@ -1,3 +1,4 @@
+import { ImageWriteService } from '../../storage/image-write.service.js';
 import {
   BadRequestException,
   ConflictException,
@@ -20,36 +21,56 @@ const productInclude = {
   createdBy: {
     select: { id: true, firstName: true, lastName: true, userName: true },
   },
-  category: { select: { id: true, name: true, imageUrl: true } },
+  category: {
+    select: { id: true, name: true, imageKey: true },
+  },
   items: productItemsSelect,
 } satisfies Prisma.ProductInclude;
 
 @Injectable()
 export class ProductsService {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(ImageWriteService) private readonly images: ImageWriteService,
+  ) {}
 
-  create(dto: CreateProductDto, user: AuthenticatedUser) {
-    return this.query(() =>
-      this.prisma.$transaction(async (tx) => {
-        const calculated = await this.calculateItems(
-          tx,
-          dto.categoryId,
-          dto.items,
-        );
-        return tx.product.create({
-          data: {
-            createdById: user.id,
-            categoryId: dto.categoryId,
-            name: dto.name,
-            description: dto.description,
-            imageUrl: dto.imageUrl,
-            isActive: dto.isActive,
-            price: calculated.price,
-            itemCount: calculated.itemCount,
-            items: { create: calculated.items },
-          },
-          include: productInclude,
-        });
+  create(
+    dto: CreateProductDto,
+    user: AuthenticatedUser,
+    file?: Express.Multer.File,
+    designPreview?: Express.Multer.File,
+  ) {
+    return this.images.saveMany(
+      [
+        { file, folder: 'products' },
+        { file: designPreview, folder: 'designs' },
+      ],
+      async ([key, previewKey]) => ({
+        result: await this.query(() =>
+          this.prisma.$transaction(async (tx) => {
+            const calculated = await this.calculateItems(
+              tx,
+              dto.categoryId,
+              dto.items,
+            );
+            return tx.product.create({
+              data: {
+                createdById: user.id,
+                categoryId: dto.categoryId,
+                name: dto.name,
+                description: dto.description,
+
+                imageKey: key,
+                designPreviewKey: previewKey,
+                isActive: dto.isActive,
+                price: calculated.price,
+                itemCount: calculated.itemCount,
+                items: { create: calculated.items },
+              },
+              include: productInclude,
+            });
+          }),
+        ),
       }),
     );
   }
@@ -102,62 +123,101 @@ export class ProductsService {
     return this.list({ createdById });
   }
 
-  update(id: string, dto: UpdateProductDto, user: AuthenticatedUser) {
+  update(
+    id: string,
+    dto: UpdateProductDto,
+    user: AuthenticatedUser,
+    file?: Express.Multer.File,
+    designPreview?: Express.Multer.File,
+  ) {
     this.requireAdmin(user);
-    return this.query(() =>
-      this.prisma.$transaction(async (tx) => {
-        // Shared lock protocol with order creation: a design cannot change underneath an order.
-        await tx.$queryRaw`SELECT id FROM products WHERE id = ${id} FOR UPDATE`;
-        const product = await tx.product.findUnique({
-          where: { id },
-          include: { items: true, _count: { select: { orders: true } } },
-        });
-        if (!product) throw new NotFoundException('Product not found');
-        const data: Prisma.ProductUpdateInput = {
-          name: dto.name,
-          description: dto.description,
-          imageUrl: dto.imageUrl,
-          isActive: dto.isActive,
+    return this.images.saveMany(
+      [
+        { file, folder: 'products' },
+        { file: designPreview, folder: 'designs' },
+      ],
+      async ([key, previewKey]) => {
+        let oldKey: string | null | undefined;
+        let oldPreviewKey: string | null | undefined;
+        const result = await this.query(() =>
+          this.prisma.$transaction(async (tx) => {
+            // Shared lock protocol with order creation: a design cannot change underneath an order.
+            await tx.$queryRaw`SELECT id FROM products WHERE id = ${id} FOR UPDATE`;
+            const product = await tx.product.findUnique({
+              where: { id },
+              include: { items: true, _count: { select: { orders: true } } },
+            });
+            if (!product) throw new NotFoundException('Product not found');
+            oldKey = product.imageKey;
+            oldPreviewKey = product.designPreviewKey;
+            const data: Prisma.ProductUpdateInput = {
+              name: dto.name,
+              description: dto.description,
+
+              imageKey: key,
+              designPreviewKey: previewKey,
+              isActive: dto.isActive,
+            };
+            if (product._count.orders > 0) {
+              // Orders reference this design. Preserve quantities and unit-price snapshots for order history.
+              if (
+                dto.items !== undefined ||
+                (dto.categoryId !== undefined &&
+                  dto.categoryId !== product.categoryId)
+              )
+                throw new ConflictException(
+                  'Ordered product components cannot be changed; create a new product design',
+                );
+            } else if (
+              (!file && !designPreview) ||
+              dto.items !== undefined ||
+              dto.categoryId !== undefined
+            ) {
+              const categoryId = dto.categoryId ?? product.categoryId;
+              const items =
+                dto.items ??
+                product.items.map((item) => ({
+                  subCategoryId: item.subCategoryId,
+                  quantity: item.quantity,
+                  position: item.position ?? undefined,
+                }));
+              const calculated = await this.calculateItems(
+                tx,
+                categoryId,
+                items,
+              );
+              data.category = { connect: { id: categoryId } };
+              data.price = calculated.price;
+              data.itemCount = calculated.itemCount;
+              data.items = { deleteMany: {}, create: calculated.items };
+            }
+            return tx.product.update({
+              where: { id },
+              data,
+              include: productInclude,
+            });
+          }),
+        );
+        return {
+          result,
+          oldKeys: [
+            key ? oldKey : undefined,
+            previewKey ? oldPreviewKey : undefined,
+          ],
         };
-        if (product._count.orders > 0) {
-          // Orders reference this design. Preserve quantities and unit-price snapshots for order history.
-          if (
-            dto.items !== undefined ||
-            (dto.categoryId !== undefined &&
-              dto.categoryId !== product.categoryId)
-          )
-            throw new ConflictException(
-              'Ordered product components cannot be changed; create a new product design',
-            );
-        } else {
-          const categoryId = dto.categoryId ?? product.categoryId;
-          const items =
-            dto.items ??
-            product.items.map((item) => ({
-              subCategoryId: item.subCategoryId,
-              quantity: item.quantity,
-              position: item.position ?? undefined,
-            }));
-          const calculated = await this.calculateItems(tx, categoryId, items);
-          data.category = { connect: { id: categoryId } };
-          data.price = calculated.price;
-          data.itemCount = calculated.itemCount;
-          data.items = { deleteMany: {}, create: calculated.items };
-        }
-        return tx.product.update({
-          where: { id },
-          data,
-          include: productInclude,
-        });
-      }),
+      },
     );
   }
 
   async remove(id: string, user: AuthenticatedUser): Promise<void> {
     this.requireAdmin(user);
-    await this.query(() =>
-      this.prisma.product.delete({ where: { id }, select: { id: true } }),
+    const record = await this.query(() =>
+      this.prisma.product.delete({
+        where: { id },
+        select: { imageKey: true, designPreviewKey: true },
+      }),
     );
+    await this.images.cleanup([record.imageKey, record.designPreviewKey]);
   }
 
   private requireAdmin(user: AuthenticatedUser) {

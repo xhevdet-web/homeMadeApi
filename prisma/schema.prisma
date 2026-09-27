@@ -64,7 +64,7 @@ model Category {
   id          String  @id @default(uuid())
   name        String  @unique
   description String?
-  imageUrl    String? @map("image_url")
+  imageKey    String? @map("image_key")
 
   isActive  Boolean @default(true) @map("is_active")
   sortOrder Int     @default(0) @map("sort_order")
@@ -85,7 +85,7 @@ model SubCategory {
 
   name        String
   description String?
-  imageUrl    String? @map("image_url")
+  imageKey    String? @map("image_key")
 
   color String?
   type  String?
@@ -124,9 +124,10 @@ model Product {
   // Example: Bracelet, Necklace, Keychain.
   categoryId String @map("category_id")
 
-  name        String
-  description String?
-  imageUrl    String? @map("image_url")
+  name             String
+  description      String?
+  imageKey         String? @map("image_key")
+  designPreviewKey String? @map("design_preview_key")
 
   // Total number of beads/components used.
   // Calculated from ProductItems.
@@ -223,7 +224,11 @@ model Order {
   //
   // Example:
   // 2999 = €29.99
-  totalPrice Int @map("total_price")
+  totalPrice       Int     @map("total_price")
+  // Immutable version of the ordered Product, category and component details.
+  designSnapshot   Json?   @map("design_snapshot")
+  // Independent R2 copy of the customer's preview at placement time.
+  designPreviewKey String? @map("design_preview_key")
 
   // Delivery information snapshot.
   firstName String @map("first_name")

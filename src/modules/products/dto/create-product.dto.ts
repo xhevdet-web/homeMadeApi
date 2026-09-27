@@ -6,7 +6,6 @@ import {
   IsBoolean,
   IsOptional,
   IsString,
-  IsUrl,
   IsUUID,
   Length,
   ValidateIf,
@@ -35,10 +34,6 @@ export class CreateProductDto {
   @IsOptional()
   @IsString()
   description?: string | null;
-
-  @IsOptional()
-  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
-  imageUrl?: string | null;
 
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsBoolean()

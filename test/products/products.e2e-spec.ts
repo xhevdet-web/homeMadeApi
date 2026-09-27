@@ -184,13 +184,13 @@ describe('Products HTTP CRUD', () => {
       .set('Authorization', 'Bearer ' + token)
       .send({
         description: null,
-        imageUrl: null,
+
         isActive: false,
       })
       .expect(200);
     expect(product.update.mock.calls[0][0].data).toMatchObject({
       description: null,
-      imageUrl: null,
+
       isActive: false,
     });
     expect(product.update.mock.calls[0][0].data).not.toHaveProperty(

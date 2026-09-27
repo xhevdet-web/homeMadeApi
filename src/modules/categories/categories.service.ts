@@ -1,5 +1,7 @@
+import { ImageWriteService } from '../../storage/image-write.service.js';
 import {
   ConflictException,
+  HttpException,
   Inject,
   Injectable,
   InternalServerErrorException,
@@ -18,20 +20,26 @@ const orderBy = [
 
 @Injectable()
 export class CategoriesService {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(ImageWriteService) private readonly images: ImageWriteService,
+  ) {}
 
-  create(dto: CreateCategoryDto) {
-    return this.query(() =>
-      this.prisma.category.create({
-        data: {
-          name: dto.name,
-          description: dto.description,
-          imageUrl: dto.imageUrl,
-          isActive: dto.isActive,
-          sortOrder: dto.sortOrder,
-        },
-      }),
-    );
+  create(dto: CreateCategoryDto, file?: Express.Multer.File) {
+    return this.images.save(file, 'categories', async (key) => ({
+      result: await this.query(() =>
+        this.prisma.category.create({
+          data: {
+            name: dto.name,
+            description: dto.description,
+
+            imageKey: key,
+            isActive: dto.isActive,
+            sortOrder: dto.sortOrder,
+          },
+        }),
+      ),
+    }));
   }
 
   findAll() {
@@ -60,32 +68,61 @@ export class CategoriesService {
     return category.subCategories;
   }
 
-  update(id: string, dto: UpdateCategoryDto) {
-    return this.query(() =>
-      this.prisma.category.update({
-        where: { id },
-        data: {
-          name: dto.name,
-          description: dto.description,
-          imageUrl: dto.imageUrl,
-          isActive: dto.isActive,
-          sortOrder: dto.sortOrder,
-        },
-      }),
-    );
+  async update(id: string, dto: UpdateCategoryDto, file?: Express.Multer.File) {
+    const previous = file ? await this.findOne(id) : undefined;
+    return this.images.save(file, 'categories', async (key) => ({
+      result: await this.query(() =>
+        this.prisma.category.update({
+          where: {
+            id,
+            ...(key ? { imageKey: previous?.imageKey ?? null } : {}),
+          },
+          data: {
+            name: dto.name,
+            description: dto.description,
+
+            imageKey: key,
+            isActive: dto.isActive,
+            sortOrder: dto.sortOrder,
+          },
+        }),
+      ),
+      oldKeys: key ? [previous?.imageKey] : [],
+    }));
   }
 
   async remove(id: string): Promise<void> {
-    await this.query(() =>
-      this.prisma.category.delete({ where: { id }, select: { id: true } }),
+    const record = await this.query(() =>
+      this.prisma.$transaction(
+        async (tx) => {
+          const deleted = await tx.category.delete({
+            where: { id },
+            select: {
+              imageKey: true,
+              subCategories: { select: { imageKey: true } },
+            },
+          });
+          return deleted;
+        },
+        { isolationLevel: 'Serializable' },
+      ),
     );
+    await this.images.cleanup([
+      record.imageKey,
+      ...(record.subCategories ?? []).map((child) => child.imageKey),
+    ]);
   }
 
   private async query<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation();
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       if (error instanceof Prisma.PrismaClientKnownRequestError) {
+        if (error.code === 'P2034')
+          throw new ConflictException(
+            'Record changed concurrently; please retry',
+          );
         if (error.code === 'P2002')
           throw new ConflictException('Category name is already in use');
         if (error.code === 'P2025')

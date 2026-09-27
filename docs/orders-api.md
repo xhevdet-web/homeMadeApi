@@ -2,15 +2,15 @@
 
 All routes use the `/api/v1` prefix and require `Authorization: Bearer <accessToken>`.
 
-| Method | Route | Access |
-| --- | --- | --- |
-| POST | /orders | CUSTOMER and ADMIN |
-| GET | /orders | Customers: own orders; admins: all orders |
-| GET | /orders/:id | Customers: own orders; admins: any order |
-| PATCH | /orders/:id | ADMIN |
-| PATCH | /orders/:id/status | ADMIN |
-| PATCH | /orders/:id/payment-status | ADMIN |
-| DELETE | /orders/:id | ADMIN; returns 204 |
+| Method | Route                      | Access                                    |
+| ------ | -------------------------- | ----------------------------------------- |
+| POST   | /orders                    | CUSTOMER and ADMIN                        |
+| GET    | /orders                    | Customers: own orders; admins: all orders |
+| GET    | /orders/:id                | Customers: own orders; admins: any order  |
+| PATCH  | /orders/:id                | ADMIN                                     |
+| PATCH  | /orders/:id/status         | ADMIN                                     |
+| PATCH  | /orders/:id/payment-status | ADMIN                                     |
+| DELETE | /orders/:id                | ADMIN; returns 204                        |
 
 ## Create
 
@@ -28,6 +28,13 @@ All routes use the `/api/v1` prefix and require `Authorization: Bearer <accessTo
 The authenticated account becomes the order's user, including when an admin creates the order. Customers can order only products they created; admins can order any existing product.
 
 The account must have nonblank firstName, lastName, phone, country, and address. These values and optional postalCode are copied into the order. Update the user profile before ordering if required fields are missing. Later profile changes do not change the snapshot.
+
+Mobile checkout saves delivery details with authenticated `PATCH /api/v1/users/me`
+before calling `POST /api/v1/orders`. The profile endpoint accepts only firstName,
+lastName, phone, country, address, and optional postalCode (null clears postalCode).
+The backend identifies the account from JWT; do not send a user ID. The existing
+`PATCH /users/:id` is an admin-only user-management endpoint and must not be used
+by customer checkout.
 
 The backend calculates totalPrice in cents from the saved ProductItem quantities and unitPrice snapshots, rather than trusting the cached Product.price. Stock is decremented and the order inserted in one transaction; any failure rolls everything back. Empty designs cannot be ordered. See [component API and inventory behavior](product-items-api.md). Status starts as ORDERED and paymentStatus as UNPAID. Client-supplied userId, prices, snapshots, statuses, timestamps, IDs, and order numbers are rejected.
 
@@ -66,3 +73,44 @@ ORDERED -> CREATING -> CREATED -> READY_FOR_COURIER -> PICKED_UP_BY_COURIER -> C
 Backward, skipped, and repeated transitions return 400. A concurrent status change returns 409; reload before retrying. COMPLETED is terminal.
 
 All customer update/delete attempts are denied. Generic updates cannot change ownership, product, delivery snapshots, price, or statuses.
+
+## Immutable design history
+
+Migration `20260928110000_add_order_design_snapshot` adds nullable
+`Order.designSnapshot` (JSONB) and `Order.designPreviewKey` (TEXT).
+
+When placing a new order, the backend captures Product name/description, Category
+metadata, and every ProductItem's component IDs, names, descriptions, colors,
+types, positions, quantities, catalog price and unit-price snapshot. The saved
+Product total is calculated from ordered quantities and unit-price snapshots.
+Snapshots cannot be supplied or edited through order DTOs.
+
+Each referenced design preview, normal Product image, Category image and component
+image is copied to `orders/<order-id>/<uuid>.<ext>` using R2 CopyObject. Duplicate
+references within one order share one copy. These objects belong to the order;
+Product/catalog image replacement removes only the source, leaving order copies.
+No screenshot is generated during status/payment updates.
+
+For new orders, `order.product` in create/list/detail/update responses comes from
+this snapshot, including `product.designPreviewUrl` and component `imageUrl`s.
+The order also exposes its own `designPreviewKey`/`designPreviewUrl`. URLs are
+derived from R2_PUBLIC_URL at response time; no public/presigned URLs are stored.
+`designSnapshot.version` is 1. Frontends can keep their existing order.product path.
+ProductItems remain the authoritative input at placement; order history then reads
+the captured version.
+
+R2 copies occur after stock preflight, inside the existing placement transaction
+while the Product lock is held. Conditional inventory decrement and all existing
+status/payment/authorization rules are preserved. The transaction timeout allows
+up to 120 seconds for image copies. If a copy or transaction fails, placement rolls
+back and completed copies are cleaned before retrying a retryable transaction.
+R2 and PostgreSQL cannot share a transaction: persistent cleanup failures or a
+process crash can leave orphan objects; cleanup failures log safe object keys for
+operator recovery. Product source objects are never cleaned as order compensation.
+Deleting an order removes its own images only after successful DB deletion; it
+keeps existing inventory behavior and does not restore stock automatically.
+
+Existing orders retain `designSnapshot: null` and the legacy current-Product view.
+Their original design cannot be reconstructed reliably after earlier edits, so the
+migration does not invent historical data. Immutable history applies to orders
+placed after this change. No existing order/product rows are deleted.

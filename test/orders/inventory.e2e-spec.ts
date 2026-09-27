@@ -1,3 +1,7 @@
+import { CategoriesService } from '../../src/modules/categories/categories.service.js';
+import { ConfigService } from '@nestjs/config';
+import { StorageService } from '../../src/storage/storage.service.js';
+import { ImageWriteService } from '../../src/storage/image-write.service.js';
 import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
@@ -58,8 +62,22 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
         await migrationAdapter.dispose();
       }
       db = new PrismaClient({ adapter: new PrismaPg(config, { schema }) });
-      products = new ProductsService(db as unknown as PrismaService);
-      orders = new OrdersService(db as unknown as PrismaService);
+      products = new ProductsService(
+        db as unknown as PrismaService,
+        new ImageWriteService(new StorageService(new ConfigService())),
+      );
+      const orderStorage = new StorageService(new ConfigService());
+      vi.spyOn(orderStorage, 'copy').mockImplementation(
+        async (key, folder) => ({
+          key: folder + '/' + randomUUID() + key.slice(key.lastIndexOf('.')),
+        }),
+      );
+      vi.spyOn(orderStorage, 'delete').mockResolvedValue();
+      orders = new OrdersService(
+        db as unknown as PrismaService,
+        orderStorage,
+        new ImageWriteService(orderStorage),
+      );
     }, 30000);
 
     beforeEach(async () => {
@@ -92,7 +110,7 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
             name: 'Gold bead',
             color: 'gold',
             type: 'glass',
-            imageUrl: 'https://example.test/gold.png',
+            imageKey: 'subcategories/gold.png',
             price: 150,
             stock: 10,
           },
@@ -198,7 +216,7 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
           name: 'Gold bead',
           color: 'gold',
           type: 'glass',
-          imageUrl: 'https://example.test/gold.png',
+          imageKey: expect.stringMatching(/^orders\//),
           price: 999,
         },
       });
@@ -409,6 +427,249 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
       expect(
         updated.items.find((item) => item.subCategoryId === firstId)?.unitPrice,
       ).toBe(150);
+    });
+
+    it('category deletion cleans both parent and cascaded component images after commit', async () => {
+      const storage = new StorageService(new ConfigService());
+      const remove = vi
+        .spyOn(storage, 'delete')
+        .mockImplementation(async () => {
+          expect(
+            await db.category.findUnique({ where: { id: categoryId } }),
+          ).toBeNull();
+          expect(await db.subCategory.count({ where: { categoryId } })).toBe(0);
+        });
+      const service = new CategoriesService(
+        db as unknown as PrismaService,
+        new ImageWriteService(storage),
+      );
+      await db.category.update({
+        where: { id: categoryId },
+        data: { imageKey: 'categories/parent.png' },
+      });
+      await db.subCategory.update({
+        where: { id: firstId },
+        data: { imageKey: 'subcategories/child.png' },
+      });
+      await service.remove(categoryId);
+      expect(remove.mock.calls).toEqual([
+        ['categories/parent.png'],
+        ['subcategories/child.png'],
+      ]);
+    });
+
+    it('concurrent category image replacements never delete the winning image', async () => {
+      const storage = new StorageService(new ConfigService());
+      let uploads = 0;
+      let release!: () => void;
+      const barrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      vi.spyOn(storage, 'upload').mockImplementation(async () => {
+        const key = 'categories/new-' + ++uploads + '.png';
+        if (uploads === 2) release();
+        await barrier;
+        return { key };
+      });
+      const remove = vi.spyOn(storage, 'delete').mockResolvedValue();
+      const service = new CategoriesService(
+        db as unknown as PrismaService,
+        new ImageWriteService(storage),
+      );
+      await db.category.update({
+        where: { id: categoryId },
+        data: { imageKey: 'categories/old.png' },
+      });
+      const results = await Promise.allSettled([
+        service.update(categoryId, {}, {} as Express.Multer.File),
+        service.update(categoryId, {}, {} as Express.Multer.File),
+      ]);
+      expect(
+        results.filter((result) => result.status === 'fulfilled'),
+      ).toHaveLength(1);
+      const saved = await db.category.findUniqueOrThrow({
+        where: { id: categoryId },
+      });
+      expect(remove).not.toHaveBeenCalledWith(saved.imageKey);
+      expect(remove).toHaveBeenCalledWith('categories/old.png');
+      expect(remove).toHaveBeenCalledTimes(2);
+    });
+
+    it('image-only updates preserve item IDs, price snapshots and stock even after catalog changes', async () => {
+      const storage = new StorageService(new ConfigService());
+      vi.spyOn(storage, 'upload').mockResolvedValue({
+        key: 'products/new.png',
+      });
+      vi.spyOn(storage, 'delete').mockResolvedValue();
+      const service = new ProductsService(
+        db as unknown as PrismaService,
+        new ImageWriteService(storage),
+      );
+      const product = await design();
+      const items = await db.productItem.findMany({
+        where: { productId: product.id },
+        orderBy: { id: 'asc' },
+      });
+      await db.subCategory.update({
+        where: { id: firstId },
+        data: { price: 999 },
+      });
+      const updated = await service.update(
+        product.id,
+        {},
+        admin,
+        {} as Express.Multer.File,
+      );
+      expect(updated.imageKey).toBe('products/new.png');
+      expect(updated.price).toBe(product.price);
+      expect(updated.itemCount).toBe(product.itemCount);
+      expect(
+        await db.productItem.findMany({
+          where: { productId: product.id },
+          orderBy: { id: 'asc' },
+        }),
+      ).toEqual(items);
+      expect(await stock(firstId)).toBe(10);
+      expect(await stock(secondId)).toBe(5);
+    });
+
+    it('stores a design preview alongside ProductItems and exposes it on Order details', async () => {
+      const storage = new StorageService(new ConfigService());
+      const upload = vi
+        .spyOn(storage, 'upload')
+        .mockResolvedValueOnce({ key: 'designs/first.png' })
+        .mockResolvedValueOnce({ key: 'designs/second.png' });
+      const remove = vi.spyOn(storage, 'delete').mockResolvedValue();
+      const service = new ProductsService(
+        db as unknown as PrismaService,
+        new ImageWriteService(storage),
+      );
+      const product = await service.create(
+        {
+          categoryId,
+          name: 'Bracelet',
+          items: [{ subCategoryId: firstId, quantity: 2 }],
+        },
+        customer,
+        undefined,
+        {} as Express.Multer.File,
+      );
+      expect(product.designPreviewKey).toBe('designs/first.png');
+      expect(product.imageKey).toBeNull();
+      expect(product.price).toBe(300);
+      expect(product.itemCount).toBe(2);
+      expect(upload).toHaveBeenCalledWith(expect.anything(), 'designs');
+      expect(await stock(firstId)).toBe(10);
+      const item = await db.productItem.findFirstOrThrow({
+        where: { productId: product.id },
+      });
+
+      const order = await place(product.id);
+      const orderPreviewKey = order.product?.designPreviewKey;
+      expect(orderPreviewKey).toMatch(/^orders\//);
+      expect(
+        (await orders.findOne(order.id, admin)).product?.designPreviewKey,
+      ).toBe(orderPreviewKey);
+      expect(await stock(firstId)).toBe(8);
+
+      const updated = await service.update(
+        product.id,
+        {},
+        admin,
+        undefined,
+        {} as Express.Multer.File,
+      );
+      expect(updated.designPreviewKey).toBe('designs/second.png');
+      expect(updated.imageKey).toBeNull();
+      expect(updated.price).toBe(product.price);
+      expect(updated.itemCount).toBe(product.itemCount);
+      expect(
+        await db.productItem.findFirstOrThrow({
+          where: { productId: product.id },
+        }),
+      ).toEqual(item);
+      expect(await stock(firstId)).toBe(8);
+      expect(remove).toHaveBeenCalledWith('designs/first.png');
+      expect(
+        (await orders.findOne(order.id, admin)).product?.designPreviewKey,
+      ).toBe(orderPreviewKey);
+    });
+
+    it('keeps Order product/category/component labels and images immutable after catalog edits', async () => {
+      const product = await design();
+      const order = await place(product.id);
+      const before = await orders.findOne(order.id, admin);
+      expect(
+        before.product.items.find((item) => item.subCategoryId === firstId)
+          ?.subCategory.imageKey,
+      ).toMatch(/^orders\//);
+      await products.update(
+        product.id,
+        { name: 'Renamed design', description: 'Changed' },
+        admin,
+      );
+      await db.category.update({
+        where: { id: categoryId },
+        data: { name: 'Renamed category' },
+      });
+      await db.subCategory.update({
+        where: { id: firstId },
+        data: {
+          name: 'Renamed bead',
+          description: 'New description',
+          color: 'purple',
+          type: 'metal',
+          price: 999,
+          imageKey: 'subcategories/replacement.png',
+        },
+      });
+      const details = await orders.findOne(order.id, admin);
+      expect(details.product).toEqual(before.product);
+      expect(details.designSnapshot).toEqual(before.designSnapshot);
+      expect(details.totalPrice).toBe(900);
+      expect(
+        (await orders.updateStatus(order.id, { status: 'CREATING' }, admin))
+          .product,
+      ).toEqual(before.product);
+      expect(
+        (
+          await orders.updatePaymentStatus(
+            order.id,
+            { paymentStatus: 'PAID' },
+            admin,
+          )
+        ).product,
+      ).toEqual(before.product);
+      expect(await stock(firstId)).toBe(8);
+      expect(await stock(secondId)).toBe(2);
+    });
+
+    it('rolls back order placement and cleans earlier copies when an image copy fails', async () => {
+      const product = await design();
+      await db.product.update({
+        where: { id: product.id },
+        data: { designPreviewKey: 'designs/source.png' },
+      });
+      const storage = new StorageService(new ConfigService());
+      vi.spyOn(storage, 'copy')
+        .mockResolvedValueOnce({ key: 'orders/test/copied.png' })
+        .mockRejectedValueOnce(new BadRequestException('copy unavailable'));
+      const remove = vi.spyOn(storage, 'delete').mockResolvedValue();
+      const service = new OrdersService(
+        db as unknown as PrismaService,
+        storage,
+        new ImageWriteService(storage),
+      );
+      await expect(
+        service.create(
+          { productId: product.id, paymentType: 'CARD' },
+          customer,
+        ),
+      ).rejects.toThrow('copy unavailable');
+      expect(remove).toHaveBeenCalledWith('orders/test/copied.png');
+      expect(await db.order.count()).toBe(0);
+      expect(await stock(firstId)).toBe(10);
+      expect(await stock(secondId)).toBe(5);
     });
 
     it('rejects componentless legacy designs and inactive components', async () => {

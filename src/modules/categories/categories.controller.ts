@@ -1,5 +1,11 @@
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard.js';
+import { AdminGuard } from '../../common/guards/admin.guard.js';
+import { ImageUpload } from '../../storage/image-upload.decorator.js';
+import { ApiTags } from '@nestjs/swagger';
 import {
+  UseGuards,
   Body,
+  UploadedFile,
   Controller,
   Delete,
   Get,
@@ -15,6 +21,7 @@ import { CategoriesService } from './categories.service.js';
 import { CreateCategoryDto } from './dto/create-category.dto.js';
 import { UpdateCategoryDto } from './dto/update-category.dto.js';
 
+@ApiTags('categories')
 @Controller('categories')
 export class CategoriesController {
   constructor(
@@ -36,20 +43,29 @@ export class CategoriesController {
     return this.service.findSubCategories(id);
   }
 
+  @ImageUpload('category')
   @Post()
-  create(@Body() dto: CreateCategoryDto) {
-    return this.service.create(dto);
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  create(
+    @Body() dto: CreateCategoryDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.service.create(dto, file);
   }
 
+  @ImageUpload('category', true)
   @Patch(':id')
+  @UseGuards(JwtAuthGuard, AdminGuard)
   update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateCategoryDto,
+    @UploadedFile() file?: Express.Multer.File,
   ) {
-    return this.service.update(id, dto);
+    return this.service.update(id, dto, file);
   }
 
   @Delete(':id')
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.service.remove(id);

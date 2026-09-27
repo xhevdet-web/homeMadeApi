@@ -4,7 +4,6 @@ import {
   IsInt,
   IsOptional,
   IsString,
-  IsUrl,
   Length,
   Max,
   Min,
@@ -26,10 +25,6 @@ export class CreateSubCategoryDto {
   @IsOptional()
   @IsString()
   description?: string | null;
-
-  @IsOptional()
-  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
-  imageUrl?: string | null;
 
   @IsOptional()
   @IsString()

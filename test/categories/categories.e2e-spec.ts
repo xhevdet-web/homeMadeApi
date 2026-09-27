@@ -1,3 +1,5 @@
+import { JwtAuthGuard } from '../../src/common/guards/jwt-auth.guard.js';
+import { AdminGuard } from '../../src/common/guards/admin.guard.js';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import type { App } from 'supertest/types.js';
@@ -36,11 +38,21 @@ describe('Categories and SubCategories HTTP CRUD', () => {
   };
 
   beforeAll(async () => {
+    vi.stubEnv('JWT_ACCESS_SECRET', 'category-tests-only-secret-32-characters');
     const module = await Test.createTestingModule({
       imports: [CategoriesModule, SubCategoriesModule],
     })
       .overrideProvider(PrismaService)
-      .useValue({ category, subCategory })
+      .useValue({
+        category,
+        subCategory,
+        $transaction: (callback: (tx: unknown) => Promise<unknown>) =>
+          callback({ category, subCategory }),
+      })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(AdminGuard)
+      .useValue({ canActivate: () => true })
       .compile();
     app = module.createNestApplication();
     setupApp(app);
@@ -61,6 +73,7 @@ describe('Categories and SubCategories HTTP CRUD', () => {
   });
   afterAll(async () => {
     await app?.close();
+    vi.unstubAllEnvs();
   });
 
   it.each(['categories', 'sub-categories'])(

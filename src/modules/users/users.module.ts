@@ -3,11 +3,12 @@ import { AdminGuard } from '../../common/guards/admin.guard.js';
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../../database/database.module.js';
 import { UsersController } from './users.controller.js';
+import { ProfileController } from './profile.controller.js';
 import { UsersService } from './users.service.js';
 
 @Module({
   imports: [DatabaseModule, AuthModule],
-  controllers: [UsersController],
+  controllers: [ProfileController, UsersController],
   providers: [UsersService, AdminGuard],
   exports: [UsersService],
 })
