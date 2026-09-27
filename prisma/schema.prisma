@@ -12,6 +12,28 @@ enum Role {
   ADMIN
 }
 
+enum OrderStatus {
+  ORDERED
+  CREATING
+  CREATED
+  READY_FOR_COURIER
+  PICKED_UP_BY_COURIER
+  COMPLETED
+}
+
+enum PaymentType {
+  CASH_ON_DELIVERY
+  CASH_ON_PICKUP
+  CARD
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  FAILED
+  REFUNDED
+}
+
 model User {
   id           String  @id @default(uuid())
   firstName    String  @map("first_name")
@@ -31,5 +53,208 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // Relations
+  products Product[]
+  orders   Order[]
+
   @@map("users")
+}
+
+model Category {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  description String?
+  imageUrl    String? @map("image_url")
+
+  isActive  Boolean @default(true) @map("is_active")
+  sortOrder Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  subCategories SubCategory[]
+  products      Product[]
+
+  @@map("categories")
+}
+
+model SubCategory {
+  id         String @id @default(uuid())
+  categoryId String @map("category_id")
+
+  name        String
+  description String?
+  imageUrl    String? @map("image_url")
+
+  color String?
+  type  String?
+
+  // Price stored in cents.
+  // Example:
+  // 150 = €1.50
+  // 1500 = €15.00
+  price Int @default(0)
+
+  stock Int @default(0)
+
+  isActive  Boolean @default(true) @map("is_active")
+  sortOrder Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  category     Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  productItems ProductItem[]
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("sub_categories")
+}
+
+model Product {
+  id String @id @default(uuid())
+
+  // User who created the product.
+  // Can be ADMIN or CUSTOMER.
+  createdById String @map("created_by_id")
+
+  // Main category of the product.
+  // Example: Bracelet, Necklace, Keychain.
+  categoryId String @map("category_id")
+
+  name        String
+  description String?
+  imageUrl    String? @map("image_url")
+
+  // Total number of beads/components used.
+  // Calculated from ProductItems.
+  //
+  // Example:
+  // 10 Gold Beads + 15 Red Beads = 25
+  itemCount Int @default(0) @map("item_count")
+
+  // Total calculated product price in cents.
+  //
+  // Example:
+  // SUM(ProductItem.quantity * ProductItem.unitPrice)
+  price Int @default(0)
+
+  isActive Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  createdBy User     @relation(fields: [createdById], references: [id])
+  category  Category @relation(fields: [categoryId], references: [id])
+
+  // A product can contain many different beads/components.
+  items ProductItem[]
+
+  orders Order[]
+
+  @@index([createdById])
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("products")
+}
+
+model ProductItem {
+  id String @id @default(uuid())
+
+  // Product this item belongs to.
+  productId String @map("product_id")
+
+  // Bead/component selected by the customer.
+  subCategoryId String @map("sub_category_id")
+
+  // How many of this bead/component are used.
+  //
+  // Example:
+  // Bead test × 10
+  quantity Int
+
+  // Position/order in the jewelry design.
+  // Useful for rebuilding the design later.
+  position Int?
+
+  // Snapshot of SubCategory.price when
+  // the product was created.
+  //
+  // Example:
+  // 150 = €1.50
+  unitPrice Int @map("unit_price")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  product     Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  subCategory SubCategory @relation(fields: [subCategoryId], references: [id])
+
+  @@index([productId])
+  @@index([subCategoryId])
+  @@map("product_items")
+}
+
+model Order {
+  id String @id @default(uuid())
+
+  // Customer who placed the order.
+  userId String @map("user_id")
+
+  // Product being ordered.
+  productId String @map("product_id")
+
+  // Human-readable order number.
+  // Example: HM-2026-000123
+  orderNumber String @unique @map("order_number")
+
+  // Current order status.
+  status OrderStatus @default(ORDERED)
+
+  // Payment information.
+  paymentType   PaymentType   @map("payment_type")
+  paymentStatus PaymentStatus @default(UNPAID) @map("payment_status")
+
+  // Final order price snapshot in cents.
+  //
+  // Example:
+  // 2999 = €29.99
+  totalPrice Int @map("total_price")
+
+  // Delivery information snapshot.
+  firstName String @map("first_name")
+  lastName  String @map("last_name")
+  phone     String
+
+  country    String
+  address    String
+  postalCode String? @map("postal_code")
+
+  // Optional instructions from customer.
+  customerNotes String? @map("customer_notes")
+
+  // Internal notes for admin.
+  adminNotes String? @map("admin_notes")
+
+  // Photo of the actual finished product.
+  // Later this can contain an S3 object key/URL.
+  finalImageUrl String? @map("final_image_url")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user    User    @relation(fields: [userId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([userId])
+  @@index([productId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([createdAt])
+  @@map("orders")
 }

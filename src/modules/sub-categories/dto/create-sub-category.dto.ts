@@ -9,9 +9,13 @@ import {
   Max,
   Min,
   ValidateIf,
+  IsUUID,
 } from 'class-validator';
 
-export class CreateCategoryDto {
+export class CreateSubCategoryDto {
+  @IsUUID()
+  categoryId!: string;
+
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
   )
@@ -26,6 +30,26 @@ export class CreateCategoryDto {
   @IsOptional()
   @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
   imageUrl?: string | null;
+
+  @IsOptional()
+  @IsString()
+  color?: string | null;
+
+  @IsOptional()
+  @IsString()
+  type?: string | null;
+
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsInt()
+  @Min(0)
+  @Max(2147483647)
+  price?: number;
+
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsInt()
+  @Min(0)
+  @Max(2147483647)
+  stock?: number;
 
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsBoolean()

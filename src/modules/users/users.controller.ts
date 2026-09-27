@@ -1,3 +1,5 @@
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard.js';
+import { AdminGuard } from '../../common/guards/admin.guard.js';
 import {
   Body,
   Controller,
@@ -10,12 +12,14 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  UseGuards,
 } from '@nestjs/common';
 import { UsersService } from './users.service.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 
 @Controller('users')
+@UseGuards(JwtAuthGuard, AdminGuard)
 export class UsersController {
   constructor(@Inject(UsersService) private readonly users: UsersService) {}
 

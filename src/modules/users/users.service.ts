@@ -41,7 +41,8 @@ export class UsersService {
           email: dto.email.trim().toLowerCase(),
           passwordHash,
           phone: dto.phone,
-          userName: dto.userName?.trim().toLowerCase(),
+          userName:
+            dto.userName === null ? null : dto.userName?.trim().toLowerCase(),
           country: dto.country,
           address: dto.address,
           postalCode: dto.postalCode,
@@ -74,7 +75,8 @@ export class UsersService {
           lastName: dto.lastName,
           email: dto.email?.trim().toLowerCase(),
           phone: dto.phone,
-          userName: dto.userName?.trim().toLowerCase(),
+          userName:
+            dto.userName === null ? null : dto.userName?.trim().toLowerCase(),
           country: dto.country,
           address: dto.address,
           postalCode: dto.postalCode,
@@ -120,6 +122,10 @@ export class UsersService {
               : 'Email is already in use',
           );
         }
+        if (error.code === 'P2003')
+          throw new ConflictException(
+            'This user has linked records and cannot be deleted. Deactivate the account instead.',
+          );
         if (error.code === 'P2025')
           throw new NotFoundException('User not found');
       }

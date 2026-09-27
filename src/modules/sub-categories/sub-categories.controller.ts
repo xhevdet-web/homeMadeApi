@@ -11,14 +11,15 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
-import { CategoriesService } from './categories.service.js';
-import { CreateCategoryDto } from './dto/create-category.dto.js';
-import { UpdateCategoryDto } from './dto/update-category.dto.js';
+import { SubCategoriesService } from './sub-categories.service.js';
+import { CreateSubCategoryDto } from './dto/create-sub-category.dto.js';
+import { UpdateSubCategoryDto } from './dto/update-sub-category.dto.js';
 
-@Controller('categories')
-export class CategoriesController {
+@Controller('sub-categories')
+export class SubCategoriesController {
   constructor(
-    @Inject(CategoriesService) private readonly service: CategoriesService,
+    @Inject(SubCategoriesService)
+    private readonly service: SubCategoriesService,
   ) {}
 
   @Get()
@@ -31,20 +32,15 @@ export class CategoriesController {
     return this.service.findOne(id);
   }
 
-  @Get(':id/sub-categories')
-  findSubCategories(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.service.findSubCategories(id);
-  }
-
   @Post()
-  create(@Body() dto: CreateCategoryDto) {
+  create(@Body() dto: CreateSubCategoryDto) {
     return this.service.create(dto);
   }
 
   @Patch(':id')
   update(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() dto: UpdateCategoryDto,
+    @Body() dto: UpdateSubCategoryDto,
   ) {
     return this.service.update(id, dto);
   }

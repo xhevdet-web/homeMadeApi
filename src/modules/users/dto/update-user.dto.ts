@@ -34,16 +34,20 @@ export class UpdateUserDto {
   @MaxLength(254)
   email?: string;
 
-  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
   @IsString()
   @Length(1, 32)
-  phone?: string;
+  phone?: string | null;
 
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsBoolean()
   isActive?: boolean;
 
-  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim().toLowerCase() : value,
   )
@@ -53,29 +57,35 @@ export class UpdateUserDto {
     message:
       'userName may contain only letters, numbers, dots, underscores and hyphens',
   })
-  userName?: string;
+  userName?: string | null;
 
-  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
   )
   @IsString()
   @Length(1, 100)
-  country?: string;
+  country?: string | null;
 
-  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
   )
   @IsString()
   @Length(1, 300)
-  address?: string;
+  address?: string | null;
 
-  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
   )
   @IsString()
   @Length(1, 20)
-  postalCode?: string;
+  postalCode?: string | null;
 }
