@@ -1,6 +1,9 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
+  IsArray,
+  ArrayUnique,
+  ValidateNested,
   IsInt,
   IsOptional,
   IsString,
@@ -10,7 +13,16 @@ import {
   ValidateIf,
 } from 'class-validator';
 
+import { CategorySizeDto } from './category-size.dto.js';
+
 export class UpdateCategoryDto {
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique((size: CategorySizeDto) => size?.id)
+  @ValidateNested({ each: true })
+  @Type(() => CategorySizeDto)
+  sizes?: CategorySizeDto[] | null;
+
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,

@@ -112,6 +112,100 @@ describe('Products HTTP CRUD', () => {
     vi.unstubAllEnvs();
   });
 
+  const size = {
+    id: 'medium',
+    name: 'Medium',
+    measurement: 18,
+    unit: 'cm',
+    maxItems: 18,
+  };
+  const save = (input: object) =>
+    request(app.getHttpServer())
+      .post(base)
+      .set('Authorization', 'Bearer ' + token)
+      .send(input);
+  const edit = (input: object) =>
+    request(app.getHttpServer())
+      .patch(base + '/' + id)
+      .set('Authorization', 'Bearer ' + token)
+      .send(input);
+  it('resolves a complete category size and counts summed quantity', async () => {
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      sizes: [size],
+    });
+    await save({
+      ...body,
+      selectedSizeId: 'medium',
+      items: [
+        { subCategoryId, quantity: 9 },
+        { subCategoryId, quantity: 9 },
+      ],
+    }).expect(201);
+    expect(product.create.mock.calls[0][0].data).toMatchObject({
+      selectedSize: size,
+      itemCount: 18,
+      price: 1350,
+    });
+    expect(subCategory.update).not.toHaveBeenCalled();
+    product.create.mockClear();
+    await save({ ...body, selectedSizeId: 'medium' }).expect(400);
+    expect(product.create).not.toHaveBeenCalled();
+  });
+  it('keeps size selection optional even in sized categories', async () => {
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      sizes: [size],
+    });
+    await save(body).expect(201);
+    expect(product.create.mock.calls[0][0].data.selectedSize).toBeUndefined();
+  });
+  it.each([null, []])('preserves unsized category flow %j', async (sizes) => {
+    category.findUnique.mockResolvedValue({ ...record.category, sizes });
+    await save(body).expect(201);
+    await save({ ...body, selectedSizeId: 'missing' }).expect(400);
+  });
+  it('rejects unknown sizes and frontend size objects or limits', async () => {
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      sizes: [size],
+    });
+    await save({ ...body, selectedSizeId: 'unknown' }).expect(400);
+    await save({ ...body, selectedSize: size }).expect(400);
+    await save({ ...body, selectedSizeId: 'medium', maxItems: 100 }).expect(
+      400,
+    );
+  });
+  it('preserves the size snapshot on edits and validates changed quantities', async () => {
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      sizes: [{ ...size, maxItems: 100 }],
+    });
+    product.findUnique.mockResolvedValue({
+      ...record,
+      selectedSize: size,
+      items: [{ subCategoryId, quantity: 18 }],
+    });
+    await edit({ name: 'Renamed' }).expect(200);
+    expect(product.update.mock.calls[0][0].data.selectedSize).toBeUndefined();
+    await edit({ items: [{ subCategoryId, quantity: 19 }] }).expect(400);
+    await edit({
+      selectedSizeId: 'medium',
+      items: [{ subCategoryId, quantity: 19 }],
+    }).expect(200);
+    expect(product.update.mock.calls.at(-1)![0].data.selectedSize).toEqual({
+      ...size,
+      maxItems: 100,
+    });
+  });
+  it('checks a newly selected size against existing quantities', async () => {
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      sizes: [size],
+    });
+    await edit({ selectedSizeId: 'medium' }).expect(400);
+  });
+
   it.each(['ADMIN', 'CUSTOMER'])(
     'allows %s creation using the authenticated creator',
     async (role) => {

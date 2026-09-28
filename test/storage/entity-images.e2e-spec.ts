@@ -16,10 +16,12 @@ import { PrismaService } from '../../src/database/prisma.service.js';
 import { Prisma } from '../../src/generated/prisma/client.js';
 import { setupApp } from '../../src/config/setup-app.js';
 import { setupSwagger } from '../../src/config/setup-swagger.js';
+import sharp from 'sharp';
+import { ForegroundSegmentationService } from '../../src/storage/foreground-segmentation.service.js';
 import { MAX_IMAGE_BYTES } from '../../src/storage/image-validation.js';
 
 const png = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aMioAAAAASUVORK5CYII=',
+  'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAE0lEQVQYlWP4//9/Az7MMDIUAABUZd9Bgp/b1QAAAABJRU5ErkJggg==',
   'base64',
 );
 const id = 'ac78a80a-ce2b-4c45-8076-fca001c71418';
@@ -43,6 +45,7 @@ describe('Entity images HTTP', () => {
   const product = delegate();
   const send = vi.spyOn(S3Client.prototype, 'send');
   const events: string[] = [];
+  const segment = vi.spyOn(ForegroundSegmentationService.prototype, 'mask');
   const config = new ConfigService({
     NODE_ENV: 'test',
     R2_ENDPOINT: 'https://test.r2.cloudflarestorage.com',
@@ -85,6 +88,13 @@ describe('Entity images HTTP', () => {
     role = 'ADMIN';
     publicUrl = '';
     events.length = 0;
+    segment.mockReset().mockImplementation(async (_rgb, width, height) => {
+      events.push('process');
+      const mask = Buffer.alloc(width * height);
+      for (let y = 8; y < height - 8; y++)
+        for (let x = 8; x < width - 8; x++) mask[y * width + x] = 255;
+      return mask;
+    });
     send.mockReset().mockImplementation(async (command) => {
       events.push(command instanceof PutObjectCommand ? 'upload' : 'delete');
       return {} as never;
@@ -122,6 +132,156 @@ describe('Entity images HTTP', () => {
   afterAll(async () => {
     await app?.close();
     vi.unstubAllEnvs();
+  });
+
+  it.each(['sub-categories', 'products'])(
+    'processes JPEG/PNG/WebP for %s creation and replacement before R2 upload',
+    async (route) => {
+      publicUrl = 'https://images.example.test';
+      for (const format of ['jpeg', 'png', 'webp'] as const)
+        for (const replace of [false, true]) {
+          events.length = 0;
+          send.mockClear();
+          const source = await sharp({
+            create: { width: 32, height: 32, channels: 3, background: 'white' },
+          })
+            .toFormat(format)
+            .toBuffer();
+          const base = '/api/v1/' + route;
+          const req = (
+            replace
+              ? request(app.getHttpServer()).patch(base + '/' + id)
+              : request(app.getHttpServer()).post(base)
+          ).auth(token, { type: 'bearer' });
+          if (!replace) {
+            req.field('name', 'White pearl').field('categoryId', id);
+            if (route === 'products')
+              req.field(
+                'items',
+                JSON.stringify([{ subCategoryId: childId, quantity: 8 }]),
+              );
+          }
+          const response = await req
+            .attach('file', source, {
+              filename: 'original.' + format,
+              contentType: 'image/' + format,
+            })
+            .expect(replace ? 200 : 201);
+          expect(events).toEqual(
+            replace
+              ? ['process', 'upload', 'update', 'delete']
+              : ['process', 'upload', 'create'],
+          );
+          const command = send.mock.calls[0][0] as PutObjectCommand;
+          expect(command.input.ContentType).toBe('image/png');
+          expect(command.input.Body).not.toEqual(source);
+          const { data, info } = await sharp(command.input.Body as Buffer)
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+          expect(info.channels).toBe(4);
+          expect(data[3]).toBe(0);
+          expect(data[(10 * info.width + 10) * 4 + 3]).toBe(255);
+          expect(response.body.imageUrl).toBe(
+            publicUrl + '/' + response.body.imageKey,
+          );
+          if (replace)
+            expect(
+              (send.mock.calls[1][0] as DeleteObjectCommand).input.Key,
+            ).toBe(oldKey);
+        }
+    },
+  );
+  it('does not process category files or customer designPreview bytes', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .auth(token, { type: 'bearer' })
+      .field('name', 'Category')
+      .attach('file', png, 'category.png')
+      .expect(201);
+    expect((send.mock.calls[0][0] as PutObjectCommand).input.Body).toEqual(png);
+    send.mockClear();
+    await request(app.getHttpServer())
+      .post('/api/v1/products')
+      .auth(token, { type: 'bearer' })
+      .field('name', 'Design')
+      .field('categoryId', id)
+      .field('items', JSON.stringify([{ subCategoryId: childId, quantity: 8 }]))
+      .attach('designPreview', png, 'preview.png')
+      .expect(201);
+    expect((send.mock.calls[0][0] as PutObjectCommand).input.Body).toEqual(png);
+    expect(segment).not.toHaveBeenCalled();
+  });
+  it.each(['sub-categories', 'products'])(
+    'cleans only the newly processed image when %s replacement fails',
+    async (route) => {
+      (route === 'products' ? product : subCategory).update.mockRejectedValue(
+        new Error('DB failure'),
+      );
+      const source = await sharp({
+        create: { width: 32, height: 32, channels: 3, background: 'white' },
+      })
+        .jpeg()
+        .toBuffer();
+      await request(app.getHttpServer())
+        .patch('/api/v1/' + route + '/' + id)
+        .auth(token, { type: 'bearer' })
+        .attach('file', source, 'original.jpg')
+        .expect(500);
+      expect(events).toEqual(['process', 'upload', 'delete']);
+      const uploaded = (send.mock.calls[0][0] as PutObjectCommand).input;
+      expect(uploaded.ContentType).toBe('image/png');
+      expect(uploaded.Body).not.toEqual(source);
+      expect((send.mock.calls[1][0] as DeleteObjectCommand).input.Key).toBe(
+        uploaded.Key,
+      );
+      expect(uploaded.Key).not.toBe(oldKey);
+    },
+  );
+  it.each(['sub-categories', 'products'])(
+    'preserves transparent %s uploads byte for byte on create and replace',
+    async (route) => {
+      for (const replace of [false, true]) {
+        send.mockClear();
+        const base = '/api/v1/' + route;
+        const req = (
+          replace
+            ? request(app.getHttpServer()).patch(base + '/' + id)
+            : request(app.getHttpServer()).post(base)
+        ).auth(token, { type: 'bearer' });
+        if (!replace) {
+          req.field('name', 'Transparent pearl').field('categoryId', id);
+          if (route === 'products')
+            req.field(
+              'items',
+              JSON.stringify([{ subCategoryId: childId, quantity: 8 }]),
+            );
+        }
+        await req
+          .attach('file', png, 'transparent.png')
+          .expect(replace ? 200 : 201);
+        expect((send.mock.calls[0][0] as PutObjectCommand).input.Body).toEqual(
+          png,
+        );
+        expect(segment).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('does not upload or update the database when processing fails', async () => {
+    segment.mockRejectedValue(new Error('private-native-detail'));
+    const source = await sharp({
+      create: { width: 32, height: 32, channels: 3, background: 'white' },
+    })
+      .jpeg()
+      .toBuffer();
+    const response = await request(app.getHttpServer())
+      .patch('/api/v1/products/' + id)
+      .auth(token, { type: 'bearer' })
+      .attach('file', source, 'original.jpg')
+      .expect(503);
+    expect(response.text).not.toContain('private-native-detail');
+    expect(send).not.toHaveBeenCalled();
+    expect(product.update).not.toHaveBeenCalled();
   });
 
   it.each([

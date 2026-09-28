@@ -76,6 +76,73 @@ describe('Categories and SubCategories HTTP CRUD', () => {
     vi.unstubAllEnvs();
   });
 
+  const size = {
+    id: 'medium',
+    name: 'Medium',
+    measurement: 18,
+    unit: 'cm',
+    maxItems: 18,
+  };
+  it.each([null, [], [size]])('saves optional sizes %j', async (sizes) => {
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .send({ name: 'Sized', sizes })
+      .expect(201);
+    expect(category.create.mock.calls[0][0].data.sizes).toEqual(
+      sizes === null ? Prisma.DbNull : sizes,
+    );
+    await request(app.getHttpServer())
+      .patch('/api/v1/categories/' + id)
+      .send({ sizes })
+      .expect(200);
+    expect(category.update.mock.calls[0][0].data.sizes).toEqual(
+      sizes === null ? Prisma.DbNull : sizes,
+    );
+  });
+  it('parses FormData sizes and rejects malformed JSON', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .field('name', 'Sized')
+      .field('sizes', JSON.stringify([size]))
+      .expect(201);
+    expect(category.create.mock.calls[0][0].data.sizes).toEqual([size]);
+    await request(app.getHttpServer())
+      .patch('/api/v1/categories/' + id)
+      .field('sizes', 'null')
+      .expect(200);
+    expect(category.update.mock.calls[0][0].data.sizes).toBe(Prisma.DbNull);
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .field('name', 'Sized')
+      .field('sizes', '[bad')
+      .expect(400);
+  });
+  it.each([
+    {},
+    'bad',
+    [null],
+    [size, size],
+    [{ ...size, id: '' }],
+    [{ ...size, name: 3 }],
+    [{ ...size, measurement: 0 }],
+    [{ ...size, measurement: '18' }],
+    [{ ...size, unit: '' }],
+    [{ ...size, maxItems: 1.5 }],
+    [{ ...size, maxItems: -1 }],
+    [{ id: 'small', name: 'Small', unit: 'cm', maxItems: 16 }],
+  ])('rejects invalid category sizes %j', async (sizes) => {
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .send({ name: 'Sized', sizes })
+      .expect(400);
+    await request(app.getHttpServer())
+      .patch('/api/v1/categories/' + id)
+      .send({ sizes })
+      .expect(400);
+    expect(category.create).not.toHaveBeenCalled();
+    expect(category.update).not.toHaveBeenCalled();
+  });
+
   it.each(['categories', 'sub-categories'])(
     'serves CRUD for %s under /api/v1',
     async (route) => {

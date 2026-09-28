@@ -72,6 +72,8 @@ function orderSelect(user: AuthenticatedUser) {
         designPreviewKey: true,
         itemCount: true,
         price: true,
+        productType: true,
+        stock: true,
         category: {
           select: {
             id: true,
@@ -122,6 +124,12 @@ export class OrdersService {
               select: {
                 id: true,
                 createdById: true,
+                createdBy: { select: { role: true } },
+                productType: true,
+                selectedSize: true,
+                price: true,
+                stock: true,
+                isActive: true,
                 name: true,
                 description: true,
                 imageKey: true,
@@ -161,17 +169,41 @@ export class OrdersService {
               },
             });
             if (!product) throw new NotFoundException('Product not found');
-            if (user.role !== 'ADMIN' && product.createdById !== user.id)
+            const readyMade = product.productType === 'READY_MADE';
+            if (readyMade) {
+              if (!product.isActive || product.createdBy.role !== 'ADMIN')
+                throw new BadRequestException(
+                  'Only active ready-made products created by admins can be ordered',
+                );
+              const reserved = await tx.product.updateMany({
+                where: {
+                  id: product.id,
+                  productType: 'READY_MADE',
+                  isActive: true,
+                  stock: { gte: 1 },
+                },
+                data: { stock: { decrement: 1 } },
+              });
+              if (reserved.count !== 1)
+                throw new BadRequestException(
+                  'Insufficient finished-product stock',
+                );
+            }
+            if (
+              !readyMade &&
+              user.role !== 'ADMIN' &&
+              product.createdById !== user.id
+            )
               throw new ForbiddenException(
                 'You can only order your own products',
               );
-            if (!product.items.length)
+            if (!readyMade && !product.items.length)
               throw new BadRequestException(
                 'Product has no components; restore or recreate the design before ordering',
               );
             const quantities = new Map<string, number>();
-            let totalPrice = 0;
-            for (const item of product.items) {
+            let totalPrice = readyMade ? product.price : 0;
+            for (const item of readyMade ? [] : product.items) {
               if (
                 !Number.isInteger(item.quantity) ||
                 item.quantity <= 0 ||
@@ -220,6 +252,9 @@ export class OrdersService {
             const previewKey = await copyImage(product.designPreviewKey);
             const snapshot = {
               id: product.id,
+              productType: product.productType ?? 'CUSTOM_DESIGN',
+              selectedSize: product.selectedSize ?? null,
+              stock: product.stock ?? 0,
               name: product.name,
               description: product.description,
               imageKey: await copyImage(product.imageKey),
@@ -517,8 +552,23 @@ export class OrdersService {
       typeof snapshot.product === 'object' &&
       !Array.isArray(snapshot.product)
     )
-      return { ...order, product: snapshot.product } as T;
-    // Legacy orders have no verifiable historical snapshot. Preserve existing behavior.
+      return {
+        ...order,
+        product: {
+          ...snapshot.product,
+          selectedSize: snapshot.product.selectedSize ?? null,
+        },
+      } as T;
+    // A current product size is not evidence of the size bought in a legacy order.
+    if (
+      order.product &&
+      typeof order.product === 'object' &&
+      !Array.isArray(order.product)
+    )
+      return {
+        ...order,
+        product: { ...order.product, selectedSize: null },
+      } as T;
     return order;
   }
 

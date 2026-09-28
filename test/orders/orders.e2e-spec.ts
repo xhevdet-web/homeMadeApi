@@ -81,7 +81,7 @@ describe('Orders HTTP', () => {
     finalImageUrl: null,
   };
   const user = { findUnique: vi.fn() };
-  const product = { findUnique: vi.fn() };
+  const product = { findUnique: vi.fn(), updateMany: vi.fn() };
   const order = {
     create: vi.fn(),
     findUnique: vi.fn(),
@@ -182,6 +182,54 @@ describe('Orders HTTP', () => {
     await app?.close();
     vi.unstubAllEnvs();
   });
+
+  it("orders another admin's ready-made product at the admin price without consuming components", async () => {
+    product.findUnique.mockResolvedValue({
+      ...productRecord,
+      createdById: otherId,
+      createdBy: { role: 'ADMIN' },
+      productType: 'READY_MADE',
+      isActive: true,
+      stock: 2,
+      price: 4500,
+    });
+    product.updateMany.mockResolvedValue({ count: 1 });
+    await post(body).expect(201);
+    expect(product.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: productId,
+        productType: 'READY_MADE',
+        isActive: true,
+        stock: { gte: 1 },
+      },
+      data: { stock: { decrement: 1 } },
+    });
+    expect(subCategory.updateMany).not.toHaveBeenCalled();
+    expect(order.create.mock.calls[0][0].data).toMatchObject({
+      totalPrice: 4500,
+      designSnapshot: { product: { productType: 'READY_MADE', price: 4500 } },
+    });
+  });
+
+  it.each([
+    { isActive: false, createdBy: { role: 'ADMIN' }, count: 1 },
+    { isActive: true, createdBy: { role: 'CUSTOMER' }, count: 1 },
+    { isActive: true, createdBy: { role: 'ADMIN' }, count: 0 },
+  ])(
+    'rejects unavailable ready-made products %j',
+    async ({ count, ...fields }) => {
+      product.findUnique.mockResolvedValue({
+        ...productRecord,
+        productType: 'READY_MADE',
+        stock: 0,
+        ...fields,
+      });
+      product.updateMany.mockResolvedValue({ count });
+      await post(body).expect(400);
+      expect(order.create).not.toHaveBeenCalled();
+      expect(subCategory.updateMany).not.toHaveBeenCalled();
+    },
+  );
 
   it('returns 400 with component details before creating an insufficient-stock order', async () => {
     product.findUnique.mockResolvedValue({
@@ -641,6 +689,71 @@ describe('Orders HTTP', () => {
     );
     expect(storage.copy).toHaveBeenCalledTimes(2);
     expect(storage.delete).not.toHaveBeenCalled();
+  });
+
+  const purchasedSize = {
+    id: 'medium',
+    name: 'Medium',
+    measurement: 18,
+    unit: 'cm',
+    maxItems: 18,
+  };
+  it('copies the selected product size into the immutable snapshot at placement', async () => {
+    product.findUnique.mockResolvedValue({
+      ...productRecord,
+      selectedSize: purchasedSize,
+    });
+    order.create.mockImplementation(async ({ data }) => ({
+      ...record,
+      ...data,
+    }));
+    const response = await post(body).expect(201);
+    expect(product.findUnique.mock.calls[0][0].select.selectedSize).toBe(true);
+    expect(
+      order.create.mock.calls[0][0].data.designSnapshot.product.selectedSize,
+    ).toEqual(purchasedSize);
+    expect(response.body.product.selectedSize).toEqual(purchasedSize);
+    expect(response.body.totalPrice).toBe(2999);
+    expect(subCategory.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { stock: { decrement: 4 } } }),
+    );
+  });
+  it.each([true, false])(
+    'returns only the saved size in details and lists (recorded: %s)',
+    async (recorded) => {
+      const saved = {
+        ...record,
+        designSnapshot: {
+          version: 1,
+          product: {
+            id: productId,
+            ...(recorded ? { selectedSize: purchasedSize } : {}),
+          },
+        },
+        product: {
+          selectedSize: { ...purchasedSize, name: 'Changed', measurement: 99 },
+        },
+      };
+      order.findUnique.mockResolvedValue(saved);
+      order.findMany.mockResolvedValue([saved]);
+      order.count.mockResolvedValue(1);
+      expect(
+        (await get('/' + id).expect(200)).body.product.selectedSize,
+      ).toEqual(recorded ? purchasedSize : null);
+      expect(
+        (await get().expect(200)).body.data[0].product.selectedSize,
+      ).toEqual(recorded ? purchasedSize : null);
+    },
+  );
+  it('does not infer a size from the live product for legacy orders without a snapshot', async () => {
+    order.findUnique.mockResolvedValue({
+      ...record,
+      designSnapshot: null,
+      product: { id: productId, selectedSize: purchasedSize },
+    });
+    expect(
+      (await get('/' + id).expect(200)).body.product.selectedSize,
+    ).toBeNull();
   });
 
   it('returns the saved Order snapshot even when the live Product changes', async () => {

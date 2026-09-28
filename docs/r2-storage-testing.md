@@ -2,8 +2,8 @@
 
 All existing POST/PATCH endpoints accept JSON or multipart/form-data with an
 optional `file`. Supported images: JPEG, PNG, WebP; maximum 5 MiB (5,242,880 bytes).
-Validation checks MIME and content signatures, not just extensions. It does not
-perform image decoding, resizing or background removal.
+Validation checks MIME and content signatures, not just extensions. Category and designPreview uploads remain unchanged. Product and SubCategory
+images are decoded and automatically processed by the backend before R2 upload.
 
 | Entity      | Create                      | Update / replace image           | Delete                            | R2 prefix      |
 | ----------- | --------------------------- | -------------------------------- | --------------------------------- | -------------- |
@@ -25,7 +25,7 @@ Only imageKey is stored; imageUrl remains a derived API response field.
 Order finalImageUrl is unchanged.
 
 Keep R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET_NAME in the
-server environment only. This CRUD integration adds no dependencies.
+server environment only. Background processing uses Sharp and ONNX Runtime on the server.
 
 With R2_PUBLIC_URL empty, uploads work but responses contain `imageUrl: null`:
 
@@ -242,3 +242,44 @@ Removed temporary test code:
 
 Prisma generated files were regenerated and remain Git-ignored. Pre-existing changes
 in other files were preserved. No frontend files were modified.
+
+
+## Automatic foreground processing
+
+Only `products/` and `subcategories/` upload folders use background removal, for both POST and PATCH. The backend validates the original size/MIME/signature, decodes a static image, auto-orients it, and uses the local BiRefNet General Lite neural model to produce a foreground alpha mask. Original foreground RGB values are retained; the implementation does not remove pixels by their whiteness. Masks retain antialiased edge transparency. Only fully transparent outer margins are cropped, with a two-pixel guard; output is lossless full-colour PNG. Existing transparent PNG/WebP uploads bypass segmentation and are stored byte for byte, preserving alpha, holes, and soft edges.
+
+`categories/` and `designs/` (customer designPreview) bypass processing entirely. Order image copies also remain unchanged. Originals are never uploaded as an intermediate object. The existing imageKey/imageUrl response and server-only R2 configuration remain unchanged.
+
+Processing occurs inside the existing safe-write flow before R2 upload and DB mutation. A processing failure leaves DB and old objects untouched. Database failure deletes the newly uploaded processed image; successful replacement deletes the old key after the DB write. Postcommit cleanup errors retain the existing `databaseCommitted` behavior.
+
+### Model setup and deployment
+
+Install the locked dependencies with pnpm, then run:
+
+```sh
+pnpm images:prepare-model
+pnpm build
+```
+
+The preparation script downloads the fixed rembg BiRefNet General Lite ONNX model (~224 MB), verifies the upstream checksum, and atomically installs it in `.models/birefnet-general-lite.onnx`. The directory is gitignored. Run preparation in deployment or include the prepared file in your server/container artifact. Start the server from the project root, or set `BACKGROUND_REMOVAL_MODEL_PATH` to an absolute model file path (also respected by the preparation script). No model download or external image-processing API call occurs during an upload. The model session is initialized lazily and reused; a missing model produces 503 without uploading the original.
+
+CPU inference requires native ONNX Runtime and Sharp binaries for the deployment platform, plus memory for the model and decoded images. Processing is serialized with a maximum of four pending images per service instance; excess requests return 503 for retry. Inputs retain the 5 MiB limit and additionally must be static, decodable images of at most 16 megapixels. Processed PNGs must also fit 5 MiB; oversized results return 400 instead of being silently downscaled. There is no API/schema migration or client-side processing change.
+
+The saliency model estimates foreground; results on fine wires, glass, reflective beads or difficult backgrounds can vary. It preserves existing alpha rather than attempting to infer it again. Validate representative catalog photos before broad rollout.
+
+Model: [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) (MIT), using the General Lite variant. Model preprocessing and download/checksum reference: [rembg BiRefNet General Lite](https://github.com/danielgatis/rembg/blob/main/rembg/sessions/birefnet_general_lite.py), [mask inference](https://github.com/danielgatis/rembg/blob/main/rembg/sessions/birefnet_general.py). Runtime: [ONNX Runtime Node](https://onnxruntime.ai/docs/get-started/with-javascript/node.html); image encoding: [Sharp PNG](https://sharp.pixelplumbing.com/api-output/#png).
+
+The model uses 1024 x 1024 inference with sigmoid decoding of its logits. The input is stretched into a square, and the alpha mask is explicitly stretched back to the original photo dimensions. Using Sharp's default cover resize for this step would crop the mask and misalign it with portrait/landscape photos. This is covered by geometry tests. CPU inference is more expensive than the previous 320-pixel U2-Net model; the cached model and bounded processing queue are retained. Run `pnpm images:prepare-model` again when updating a deployment from U2-Net. The existing custom model path must point to the prepared BiRefNet model, not the old U2-Net file.
+
+Existing R2 objects are not rewritten automatically. Replace an unsatisfactory catalog image by uploading its **original opaque photo** again. Uploading an already processed transparent PNG intentionally preserves its current alpha and bypasses segmentation. Order-owned historical image copies remain unchanged.
+
+### Background processing verification
+
+```sh
+pnpm test
+pnpm test:e2e
+# Opt-in real CPU inference (model must be provisioned):
+RUN_BACKGROUND_MODEL_TESTS=1 pnpm test:e2e
+```
+
+On PowerShell, set `$env:RUN_BACKGROUND_MODEL_TESTS='1'` before running tests. Unit tests verify opaque JPEG/PNG/WebP conversion, preservation of white foreground/soft edges, transparent PNG/WebP byte preservation, and failure handling. HTTP tests use actual Sharp decoding/encoding with deterministic segmentation and intercepted S3 commands, checking both entity create/update paths, processed-only uploads, URLs, category/preview passthrough, and replacement cleanup. The opt-in inference tests exercise the real model on a generated white-pearl sample in JPEG, PNG and WebP, plus the real bracelet regression photo in JPEG and PNG. The bracelet checks verify transparent center/tabletop pixels and preserved black/red/amber beads and the silver clasp. Tests save inspection artifacts under `.temp/background-verification/`. They do not contact R2. Live R2 tests remain separately opt-in with `RUN_R2_LIVE_TESTS=1`.

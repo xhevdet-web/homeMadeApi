@@ -57,11 +57,13 @@ class MultipartFieldsInterceptor implements NestInterceptor {
       }
       if (body.isActive === 'true') body.isActive = true;
       if (body.isActive === 'false') body.isActive = false;
-      if (typeof body.items === 'string') {
-        try {
-          body.items = JSON.parse(body.items) as unknown;
-        } catch {
-          throw new BadRequestException('items must be a valid JSON array');
+      for (const field of ['items', 'sizes']) {
+        if (typeof body[field] === 'string') {
+          try {
+            body[field] = JSON.parse(body[field]) as unknown;
+          } catch {
+            throw new BadRequestException(field + ' must be valid JSON');
+          }
         }
       }
     }
@@ -83,6 +85,35 @@ export function ImageUpload(
       description: 'Optional JPEG, PNG or WebP, maximum 5 MB.',
     },
   };
+  if (entity === 'category')
+    properties.sizes = {
+      description:
+        'Optional sizes array or null. Multipart: JSON.stringify(sizes). Size IDs must be unique.',
+      nullable: true,
+      oneOf: [
+        { type: 'string' },
+        {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['id', 'name', 'measurement', 'unit', 'maxItems'],
+            properties: {
+              id: { type: 'string' },
+              name: { type: 'string' },
+              measurement: { type: 'number', exclusiveMinimum: 0 },
+              unit: { type: 'string' },
+              maxItems: { type: 'integer', minimum: 1 },
+            },
+          },
+        },
+      ],
+    };
+  if (entity === 'product')
+    properties.selectedSizeId = {
+      type: 'string',
+      description:
+        'Optional size ID resolved from the selected category. Omit on update to preserve the size snapshot.',
+    };
   if (entity !== 'category')
     properties.categoryId = { type: 'string', format: 'uuid' };
   if (entity !== 'product')
@@ -99,9 +130,31 @@ export function ImageUpload(
       stock: { type: 'integer', minimum: 0 },
     });
   if (entity === 'product')
+    Object.assign(properties, {
+      productType: {
+        type: 'string',
+        enum: ['CUSTOM_DESIGN', 'READY_MADE'],
+        description:
+          'Defaults to CUSTOM_DESIGN. Cannot be changed after creation.',
+      },
+      price: {
+        type: 'integer',
+        minimum: 0,
+        maximum: 2147483647,
+        description:
+          'Required for READY_MADE, in cents. CUSTOM_DESIGN price is calculated.',
+      },
+      stock: {
+        type: 'integer',
+        minimum: 0,
+        maximum: 2147483647,
+        description: 'Required finished-product inventory for READY_MADE.',
+      },
+    });
+  if (entity === 'product')
     properties.items = {
       description:
-        'Multipart: JSON text. JSON requests: array. Prices are calculated by the backend.',
+        'Multipart: JSON text. JSON requests: array. Required and nonempty for CUSTOM_DESIGN; optional for READY_MADE.',
       oneOf: [
         {
           type: 'string',
@@ -110,7 +163,7 @@ export function ImageUpload(
         },
         {
           type: 'array',
-          minItems: 1,
+          minItems: 0,
           maxItems: 1000,
           items: {
             type: 'object',
@@ -163,11 +216,7 @@ export function ImageUpload(
         properties,
         required: update
           ? []
-          : [
-              'name',
-              ...(entity !== 'category' ? ['categoryId'] : []),
-              ...(entity === 'product' ? ['items'] : []),
-            ],
+          : ['name', ...(entity !== 'category' ? ['categoryId'] : [])],
       },
     }),
     UseFilters(UploadSizeFilter),

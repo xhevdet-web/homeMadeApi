@@ -12,6 +12,11 @@ enum Role {
   ADMIN
 }
 
+enum ProductType {
+  CUSTOM_DESIGN
+  READY_MADE
+}
+
 enum OrderStatus {
   ORDERED
   CREATING
@@ -61,6 +66,7 @@ model User {
 }
 
 model Category {
+  sizes       Json?
   id          String  @id @default(uuid())
   name        String  @unique
   description String?
@@ -114,7 +120,10 @@ model SubCategory {
 }
 
 model Product {
-  id String @id @default(uuid())
+  selectedSize Json?       @map("selected_size")
+  id           String      @id @default(uuid())
+  productType  ProductType @default(CUSTOM_DESIGN) @map("product_type")
+  stock        Int         @default(0)
 
   // User who created the product.
   // Can be ADMIN or CUSTOMER.

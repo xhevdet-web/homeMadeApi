@@ -142,3 +142,21 @@ $env:RUN_INVENTORY_DB_TESTS = '1'
 ```
 
 They use DATABASE_URL and remove only their own temporary schema afterward.
+
+
+## Ready-made products
+
+`POST /api/v1/products` accepts `productType: "READY_MADE"` for admins only. Send `categoryId`, `name`, `price` (cents), `stock`, and an uploaded image in the multipart `file` field. `description`, `isActive`, and `items` are optional. Multipart `items` uses JSON text. Price and stock must be integers from 0 to 2147483647. Ready-made components are informational and never determine the selling price or consume inventory on purchase.
+
+Admins can edit these fields through `PATCH /api/v1/products/:id`, including price and stock after purchases. Product type cannot be changed after creation. Product responses include `productType` and finished-product `stock`.
+
+Omitting `productType` defaults to `CUSTOM_DESIGN`, including all migrated products. Custom designs still require nonempty components, calculate their price, and use component inventory; client-set product price/stock are rejected.
+
+
+## Optional category sizes
+
+Categories accept `sizes: null`, `sizes: []`, or an array of `{ id, name, measurement, unit, maxItems }`. IDs must be unique; measurement must be positive and maxItems a positive integer. For multipart category create/update, send `sizes` as `JSON.stringify(sizes)`. Omitting sizes on update preserves the existing configuration; null clears it.
+
+Products optionally accept `selectedSizeId`. The backend resolves this ID from the selected category, stores the complete object in `selectedSize`, and rejects a sum of component quantities above its maxItems. Frontend size objects and limits are not accepted. Omitting selection on creation remains supported, even for sized categories. Unknown IDs, including IDs supplied for unsized categories, return 400.
+
+Omitting `selectedSizeId` on product update preserves the existing snapshot, including when category sizes change. Component edits use the preserved limit while the target category has sizes; unsized categories impose no limit. Resending a size ID explicitly resolves the current category configuration. Changing categories without a size ID retains the previous snapshot. This API does not currently offer an explicit size-clearing operation. New orders snapshot selectedSize at purchase; older orders without a saved size return null.

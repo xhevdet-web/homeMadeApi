@@ -14,13 +14,18 @@ import {
   CopyObjectCommand,
 } from '@aws-sdk/client-s3';
 import { validateImage } from './image-validation.js';
+import { ImageProcessingService } from './image-processing.service.js';
 
 @Injectable()
 export class StorageService implements OnModuleDestroy {
   private client?: S3Client;
   private bucket?: string;
 
-  constructor(@Inject(ConfigService) private readonly config: ConfigService) {}
+  constructor(
+    @Inject(ConfigService) private readonly config: ConfigService,
+    @Inject(ImageProcessingService)
+    private readonly processing = new ImageProcessingService(),
+  ) {}
 
   private connection() {
     if (!this.client) {
@@ -64,12 +69,16 @@ export class StorageService implements OnModuleDestroy {
     file: Express.Multer.File,
     folder = 'uploads',
   ): Promise<{ key: string }> {
-    const extension = validateImage(file);
+    validateImage(file);
     if (
       folder.length > 200 ||
       !/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(folder)
     )
       throw new BadRequestException('Invalid storage folder');
+    // Entity folders select processing centrally for both create and replacement uploads.
+    if (folder === 'subcategories' || folder === 'products')
+      file = await this.processing.process(file);
+    const extension = validateImage(file);
     const key = folder + '/' + randomUUID() + extension;
     const { client, bucket } = this.connection();
     try {

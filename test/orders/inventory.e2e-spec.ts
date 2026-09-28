@@ -150,6 +150,130 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
         customer,
       );
 
+    it('persists category sizes and product size snapshots without reserving inventory', async () => {
+      const size = {
+        id: 'medium',
+        name: 'Medium',
+        measurement: 18,
+        unit: 'cm',
+        maxItems: 18,
+      };
+      await db.category.update({
+        where: { id: categoryId },
+        data: { sizes: [size] },
+      });
+      const product = await products.create(
+        {
+          categoryId,
+          name: 'Sized bracelet',
+          selectedSizeId: 'medium',
+          items: [{ subCategoryId: firstId, quantity: 18 }],
+        },
+        customer,
+      );
+      expect(product.selectedSize).toEqual(size);
+      expect(product.itemCount).toBe(18);
+      expect(await stock(firstId)).toBe(10);
+      await expect(
+        products.create(
+          {
+            categoryId,
+            name: 'Too large',
+            selectedSizeId: 'medium',
+            items: [{ subCategoryId: firstId, quantity: 20 }],
+          },
+          customer,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(await db.product.count()).toBe(1);
+      await db.category.update({
+        where: { id: categoryId },
+        data: { sizes: [{ ...size, maxItems: 30 }] },
+      });
+      await products.update(product.id, { name: 'Renamed' }, admin);
+      expect((await products.findOne(product.id)).selectedSize).toEqual(size);
+      await expect(
+        products.update(
+          product.id,
+          { items: [{ subCategoryId: firstId, quantity: 20 }] },
+          admin,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await products.update(
+        product.id,
+        {
+          selectedSizeId: 'medium',
+          items: [{ subCategoryId: firstId, quantity: 20 }],
+        },
+        admin,
+      );
+      expect((await products.findOne(product.id)).selectedSize).toEqual({
+        ...size,
+        maxItems: 30,
+      });
+      expect(await stock(firstId)).toBe(10);
+    });
+
+    it('atomically sells the last ready-made unit and keeps the purchased details after edits', async () => {
+      const creator = await db.user.create({
+        data: {
+          firstName: 'Admin',
+          lastName: 'Test',
+          email: 'admin@example.test',
+          passwordHash: 'test',
+          role: 'ADMIN',
+        },
+      });
+      const product = await db.product.create({
+        data: {
+          createdById: creator.id,
+          categoryId,
+          name: 'Ready bracelet',
+          productType: 'READY_MADE',
+          price: 2500,
+          stock: 1,
+          imageKey: 'products/ready.png',
+          items: {
+            create: [{ subCategoryId: firstId, quantity: 2, unitPrice: 150 }],
+          },
+        },
+      });
+      const results = await Promise.allSettled([
+        place(product.id),
+        place(product.id),
+      ]);
+      expect(
+        results.filter((result) => result.status === 'fulfilled'),
+      ).toHaveLength(1);
+      expect(
+        results.filter((result) => result.status === 'rejected'),
+      ).toHaveLength(1);
+      expect(
+        (await db.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(0);
+      expect(await stock(firstId)).toBe(10);
+      expect(await db.order.count()).toBe(1);
+      const purchased = results.find(
+        (result) => result.status === 'fulfilled',
+      )!;
+      if (purchased.status !== 'fulfilled')
+        throw new Error('Expected a purchase');
+      await products.update(
+        product.id,
+        { name: 'Changed', price: 9000, stock: 5, items: [] },
+        admin,
+      );
+      const historical = await orders.findOne(purchased.value.id, customer);
+      expect(historical.totalPrice).toBe(2500);
+      expect(historical.product).toMatchObject({
+        name: 'Ready bracelet',
+        price: 2500,
+        productType: 'READY_MADE',
+      });
+      expect(historical.product.items).toHaveLength(1);
+    });
+
     it('calculates and snapshots components without reserving stock when saving a design', async () => {
       const product = await design();
       expect(product).toMatchObject({ price: 900, itemCount: 5 });

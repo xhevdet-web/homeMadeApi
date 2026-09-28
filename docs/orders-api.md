@@ -114,3 +114,17 @@ Existing orders retain `designSnapshot: null` and the legacy current-Product vie
 Their original design cannot be reconstructed reliably after earlier edits, so the
 migration does not invent historical data. Immutable history applies to orders
 placed after this change. No existing order/product rows are deleted.
+
+
+## Ready-made purchases
+
+Customers can order active `READY_MADE` products created by admins through the existing order creation endpoint. Each order buys one finished product. Placement atomically checks and deducts one unit of product stock, without deducting component stock. Out-of-stock, inactive, and non-admin-created ready-made products are rejected. The purchased admin price, product type, product details, components, and independent image copies are preserved in the immutable order snapshot. Later catalog edits do not change the purchased details or total price.
+
+Custom-design ordering retains its ownership rules, component price snapshots, and component stock deductions.
+
+
+## Purchased size
+
+New orders copy the complete `Product.selectedSize` into `designSnapshot.product.selectedSize` at placement. Order detail, list and update responses expose that saved value as `product.selectedSize`. A recorded size can be displayed as `Medium ? 18 cm` using its name, measurement and unit.
+
+Orders without a saved size return `product.selectedSize: null`; display **Size not recorded**. Never infer an older purchase's size from the live product or current category configuration. This addition does not change price or inventory handling and requires no migration.

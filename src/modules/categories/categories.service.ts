@@ -30,6 +30,18 @@ export class CategoriesService {
       result: await this.query(() =>
         this.prisma.category.create({
           data: {
+            sizes:
+              dto.sizes === null
+                ? Prisma.DbNull
+                : dto.sizes?.map(
+                    ({ id, name, measurement, unit, maxItems }) => ({
+                      id,
+                      name,
+                      measurement,
+                      unit,
+                      maxItems,
+                    }),
+                  ),
             name: dto.name,
             description: dto.description,
 
@@ -78,6 +90,18 @@ export class CategoriesService {
             ...(key ? { imageKey: previous?.imageKey ?? null } : {}),
           },
           data: {
+            sizes:
+              dto.sizes === null
+                ? Prisma.DbNull
+                : dto.sizes?.map(
+                    ({ id, name, measurement, unit, maxItems }) => ({
+                      id,
+                      name,
+                      measurement,
+                      unit,
+                      maxItems,
+                    }),
+                  ),
             name: dto.name,
             description: dto.description,
 

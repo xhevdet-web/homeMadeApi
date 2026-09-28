@@ -22,7 +22,7 @@ const productInclude = {
     select: { id: true, firstName: true, lastName: true, userName: true },
   },
   category: {
-    select: { id: true, name: true, imageKey: true },
+    select: { id: true, name: true, imageKey: true, sizes: true },
   },
   items: productItemsSelect,
 } satisfies Prisma.ProductInclude;
@@ -40,6 +40,19 @@ export class ProductsService {
     file?: Express.Multer.File,
     designPreview?: Express.Multer.File,
   ) {
+    const readyMade = dto.productType === 'READY_MADE';
+    if (readyMade) {
+      this.requireAdmin(user);
+      this.validateInventory(dto.price, dto.stock);
+      if (!file)
+        throw new BadRequestException(
+          'Ready-made products require an uploaded image',
+        );
+    } else if (dto.price !== undefined || dto.stock !== undefined) {
+      throw new BadRequestException(
+        'Custom design price is calculated and inventory uses component stock',
+      );
+    }
     return this.images.saveMany(
       [
         { file, folder: 'products' },
@@ -48,13 +61,21 @@ export class ProductsService {
       async ([key, previewKey]) => ({
         result: await this.query(() =>
           this.prisma.$transaction(async (tx) => {
-            const calculated = await this.calculateItems(
-              tx,
-              dto.categoryId,
-              dto.items,
-            );
+            const calculated = readyMade
+              ? await this.readyMadeItems(tx, dto.categoryId, dto.items)
+              : await this.calculateItems(tx, dto.categoryId, dto.items ?? []);
+            const selectedSize =
+              dto.selectedSizeId === undefined
+                ? undefined
+                : await this.resolveSize(
+                    tx,
+                    dto.categoryId,
+                    dto.selectedSizeId,
+                    calculated.itemCount,
+                  );
             return tx.product.create({
               data: {
+                selectedSize,
                 createdById: user.id,
                 categoryId: dto.categoryId,
                 name: dto.name,
@@ -63,7 +84,9 @@ export class ProductsService {
                 imageKey: key,
                 designPreviewKey: previewKey,
                 isActive: dto.isActive,
-                price: calculated.price,
+                productType: dto.productType ?? 'CUSTOM_DESIGN',
+                stock: readyMade ? dto.stock : 0,
+                price: readyMade ? dto.price : calculated.price,
                 itemCount: calculated.itemCount,
                 items: { create: calculated.items },
               },
@@ -148,6 +171,22 @@ export class ProductsService {
               include: { items: true, _count: { select: { orders: true } } },
             });
             if (!product) throw new NotFoundException('Product not found');
+            if (
+              dto.productType !== undefined &&
+              dto.productType !== (product.productType ?? 'CUSTOM_DESIGN')
+            )
+              throw new BadRequestException('Product type cannot be changed');
+            if (
+              product.productType !== 'READY_MADE' &&
+              (dto.price !== undefined || dto.stock !== undefined)
+            )
+              throw new BadRequestException(
+                'Custom design price is calculated and inventory uses component stock',
+              );
+            if (product.productType !== 'READY_MADE' && dto.items?.length === 0)
+              throw new BadRequestException(
+                'Product must contain at least one component',
+              );
             oldKey = product.imageKey;
             oldPreviewKey = product.designPreviewKey;
             const data: Prisma.ProductUpdateInput = {
@@ -158,7 +197,30 @@ export class ProductsService {
               designPreviewKey: previewKey,
               isActive: dto.isActive,
             };
-            if (product._count.orders > 0) {
+            if (product.productType === 'READY_MADE') {
+              this.validateInventory(
+                dto.price ?? product.price,
+                dto.stock ?? product.stock,
+              );
+              data.price = dto.price;
+              data.stock = dto.stock;
+              if (dto.items !== undefined || dto.categoryId !== undefined) {
+                const categoryId = dto.categoryId ?? product.categoryId;
+                const calculated = await this.readyMadeItems(
+                  tx,
+                  categoryId,
+                  dto.items ??
+                    product.items.map((item) => ({
+                      subCategoryId: item.subCategoryId,
+                      quantity: item.quantity,
+                      position: item.position ?? undefined,
+                    })),
+                );
+                data.category = { connect: { id: categoryId } };
+                data.itemCount = calculated.itemCount;
+                data.items = { deleteMany: {}, create: calculated.items };
+              }
+            } else if (product._count.orders > 0) {
               // Orders reference this design. Preserve quantities and unit-price snapshots for order history.
               if (
                 dto.items !== undefined ||
@@ -190,6 +252,34 @@ export class ProductsService {
               data.price = calculated.price;
               data.itemCount = calculated.itemCount;
               data.items = { deleteMany: {}, create: calculated.items };
+            }
+            if (dto.selectedSizeId !== undefined) {
+              data.selectedSize = await this.resolveSize(
+                tx,
+                dto.categoryId ?? product.categoryId,
+                dto.selectedSizeId,
+                (dto.items ?? product.items).reduce(
+                  (sum, item) => sum + item.quantity,
+                  0,
+                ),
+              );
+            } else if (
+              dto.items !== undefined ||
+              dto.categoryId !== undefined
+            ) {
+              // Preserve the stored size snapshot; never accept frontend limits.
+              const category = await tx.category.findUnique({
+                where: { id: dto.categoryId ?? product.categoryId },
+                select: { sizes: true },
+              });
+              if (Array.isArray(category?.sizes) && category.sizes.length > 0)
+                this.validateSizeLimit(
+                  product.selectedSize,
+                  (dto.items ?? product.items).reduce(
+                    (sum, item) => sum + item.quantity,
+                    0,
+                  ),
+                );
             }
             return tx.product.update({
               where: { id },
@@ -233,6 +323,82 @@ export class ProductsService {
         orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       }),
     );
+  }
+
+  private async resolveSize(
+    tx: Prisma.TransactionClient,
+    categoryId: string,
+    sizeId: string,
+    itemCount: number,
+  ) {
+    const category = await tx.category.findUnique({
+      where: { id: categoryId },
+      select: { sizes: true },
+    });
+    if (!category) throw new NotFoundException('Category not found');
+    const size = Array.isArray(category.sizes)
+      ? category.sizes.find(
+          (size) =>
+            size !== null &&
+            typeof size === 'object' &&
+            !Array.isArray(size) &&
+            size.id === sizeId,
+        )
+      : undefined;
+    if (!size)
+      throw new BadRequestException(
+        'Selected size does not exist in the selected category',
+      );
+    this.validateSizeLimit(size, itemCount);
+    return size as Prisma.InputJsonObject;
+  }
+
+  private validateSizeLimit(
+    size: Prisma.JsonValue | undefined,
+    itemCount: number,
+  ) {
+    if (
+      size &&
+      typeof size === 'object' &&
+      !Array.isArray(size) &&
+      typeof size.maxItems === 'number' &&
+      itemCount > size.maxItems
+    )
+      throw new BadRequestException(
+        'Total component quantity exceeds selected size maxItems (' +
+          size.maxItems +
+          ')',
+      );
+  }
+
+  private validateInventory(price: unknown, stock: unknown) {
+    for (const [field, value] of [
+      ['price', price],
+      ['stock', stock],
+    ] as const)
+      if (
+        typeof value !== 'number' ||
+        !Number.isInteger(value) ||
+        value < 0 ||
+        value > 2147483647
+      )
+        throw new BadRequestException(
+          field + ' must be a nonnegative integer within the supported range',
+        );
+  }
+
+  private async readyMadeItems(
+    tx: Prisma.TransactionClient,
+    categoryId: string,
+    items?: ProductItemDto[],
+  ) {
+    if (items?.length) return this.calculateItems(tx, categoryId, items);
+    const category = await tx.category.findUnique({
+      where: { id: categoryId },
+      select: { id: true },
+    });
+    if (!category) throw new NotFoundException('Category not found');
+    return { price: 0, itemCount: 0, items: [] };
   }
 
   private async calculateItems(
