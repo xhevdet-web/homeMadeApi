@@ -11,7 +11,10 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { Prisma, OrderStatus } from '../../generated/prisma/client.js';
-import { productItemsSelect } from '../products/product-items.select.js';
+import {
+  garmentVariantSelect,
+  productItemsSelect,
+} from '../products/product-items.select.js';
 import { StorageService } from '../../storage/storage.service.js';
 import { ImageWriteService } from '../../storage/image-write.service.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.type.js';
@@ -70,10 +73,13 @@ function orderSelect(user: AuthenticatedUser) {
 
         imageKey: true,
         designPreviewKey: true,
+        backDesignPreviewKey: true,
         itemCount: true,
         price: true,
+        basePrice: true,
         productType: true,
         stock: true,
+        selectedOptions: true,
         category: {
           select: {
             id: true,
@@ -81,8 +87,12 @@ function orderSelect(user: AuthenticatedUser) {
             description: true,
 
             imageKey: true,
+            builderType: true,
+            options: true,
+            builderConfig: true,
           },
         },
+        garmentVariant: { select: garmentVariantSelect },
         items: productItemsSelect,
       },
     },
@@ -127,6 +137,8 @@ export class OrdersService {
                 createdBy: { select: { role: true } },
                 productType: true,
                 selectedSize: true,
+                selectedOptions: true,
+                textLayers: true,
                 price: true,
                 stock: true,
                 isActive: true,
@@ -134,12 +146,40 @@ export class OrdersService {
                 description: true,
                 imageKey: true,
                 designPreviewKey: true,
+                backDesignPreviewKey: true,
+                basePrice: true,
                 category: {
                   select: {
                     id: true,
                     name: true,
                     description: true,
                     imageKey: true,
+                    builderType: true,
+                    options: true,
+                    builderConfig: true,
+                  },
+                },
+                garmentVariant: {
+                  select: {
+                    id: true,
+                    size: true,
+                    colorName: true,
+                    colorValue: true,
+                    sku: true,
+                    isActive: true,
+                    garment: {
+                      select: {
+                        id: true,
+                        name: true,
+                        isActive: true,
+                        imageKey: true,
+                        frontImageKey: true,
+                        backImageKey: true,
+                        frontPrintArea: true,
+                        backPrintArea: true,
+                        silhouette: true,
+                      },
+                    },
                   },
                 },
                 items: {
@@ -150,6 +190,12 @@ export class OrdersService {
                     quantity: true,
                     unitPrice: true,
                     position: true,
+                    customImageKey: true,
+                    side: true,
+                    x: true,
+                    y: true,
+                    scale: true,
+                    rotation: true,
                     subCategory: {
                       select: {
                         id: true,
@@ -157,10 +203,12 @@ export class OrdersService {
                         categoryId: true,
                         description: true,
                         imageKey: true,
+                        originalImageKey: true,
                         color: true,
                         type: true,
                         price: true,
                         stock: true,
+                        trackStock: true,
                         isActive: true,
                       },
                     },
@@ -197,12 +245,34 @@ export class OrdersService {
               throw new ForbiddenException(
                 'You can only order your own products',
               );
-            if (!readyMade && !product.items.length)
+            if (
+              !readyMade &&
+              !product.items.length &&
+              (!product.category.builderType ||
+                product.category.builderType === 'JEWELRY')
+            )
               throw new BadRequestException(
                 'Product has no components; restore or recreate the design before ordering',
               );
+            const apparel = product.category.builderType === 'APPAREL';
+            const variant = product.garmentVariant;
+            if (apparel && !readyMade) {
+              if (!variant)
+                throw new BadRequestException(
+                  'Choose a garment size and colour before ordering this design',
+                );
+              if (!variant.isActive || !variant.garment.isActive)
+                throw new BadRequestException(
+                  `${variant.garment.name} in ${variant.colorName} / ${variant.size} is no longer available`,
+                );
+            }
             const quantities = new Map<string, number>();
-            let totalPrice = readyMade ? product.price : 0;
+            // Custom designs start from the garment price snapshotted on the design.
+            let totalPrice = readyMade
+              ? product.price
+              : (product.basePrice ?? 0);
+            if (!Number.isInteger(totalPrice) || totalPrice < 0)
+              throw new BadRequestException('Product has an invalid price');
             for (const item of readyMade ? [] : product.items) {
               if (
                 !Number.isInteger(item.quantity) ||
@@ -220,7 +290,13 @@ export class OrdersService {
                 throw new BadRequestException(
                   'Product quantity or price exceeds the supported integer range',
                 );
-              quantities.set(item.subCategoryId, quantity);
+              // Printed (unlimited) designs never consume inventory.
+              if (item.subCategory.trackStock !== false)
+                quantities.set(item.subCategoryId, quantity);
+              else if (!item.subCategory.isActive)
+                throw new BadRequestException(
+                  'SubCategory is inactive: ' + item.subCategory.name,
+                );
             }
             // Preflight aggregated requirements, including repeated beads at different positions.
             for (const [subCategoryId, requestedQuantity] of quantities) {
@@ -250,16 +326,49 @@ export class OrdersService {
               return key;
             };
             const previewKey = await copyImage(product.designPreviewKey);
+            const backPreviewKey = await copyImage(
+              product.backDesignPreviewKey,
+            );
             const snapshot = {
               id: product.id,
               productType: product.productType ?? 'CUSTOM_DESIGN',
               selectedSize: product.selectedSize ?? null,
+              selectedOptions: product.selectedOptions ?? null,
+              // Personalised gift text, printed exactly as ordered.
+              textLayers: product.textLayers ?? null,
               stock: product.stock ?? 0,
               name: product.name,
               description: product.description,
               imageKey: await copyImage(product.imageKey),
               designPreviewKey: previewKey,
+              backDesignPreviewKey: backPreviewKey,
+              basePrice: product.basePrice ?? 0,
               price: totalPrice,
+              // The exact garment bought, frozen for order history and production.
+              garmentVariant: variant
+                ? {
+                    id: variant.id,
+                    size: variant.size,
+                    colorName: variant.colorName,
+                    colorValue: variant.colorValue,
+                    sku: variant.sku,
+                    garment: {
+                      id: variant.garment.id,
+                      name: variant.garment.name,
+                      imageKey: await copyImage(variant.garment.imageKey),
+                      // Mockups and print areas let production reproduce placements in cm.
+                      frontImageKey: await copyImage(
+                        variant.garment.frontImageKey,
+                      ),
+                      backImageKey: await copyImage(
+                        variant.garment.backImageKey,
+                      ),
+                      frontPrintArea: variant.garment.frontPrintArea,
+                      backPrintArea: variant.garment.backPrintArea,
+                      silhouette: variant.garment.silhouette,
+                    },
+                  }
+                : null,
               itemCount: product.items.reduce(
                 (sum, item) => sum + item.quantity,
                 0,
@@ -276,12 +385,19 @@ export class OrdersService {
                 quantity: number;
                 position: number | null;
                 unitPrice: number;
+                customImageKey: string | null;
+                side: string | null;
+                x: number | null;
+                y: number | null;
+                scale: number | null;
+                rotation: number | null;
                 subCategory: {
                   id: string;
                   categoryId: string;
                   name: string;
                   description: string | null;
                   imageKey: string | null;
+                  originalImageKey: string | null;
                   color: string | null;
                   type: string | null;
                   price: number;
@@ -296,12 +412,20 @@ export class OrdersService {
                 quantity: item.quantity,
                 position: item.position,
                 unitPrice: item.unitPrice,
+                // The customer's own artwork is copied with the order, like every image.
+                customImageKey: await copyImage(item.customImageKey),
+                side: item.side,
+                x: item.x,
+                y: item.y,
+                scale: item.scale,
+                rotation: item.rotation,
                 subCategory: {
                   id: component.id,
                   categoryId: component.categoryId,
                   name: component.name,
                   description: component.description,
                   imageKey: await copyImage(component.imageKey),
+                  originalImageKey: await copyImage(component.originalImageKey),
                   color: component.color,
                   type: component.type,
                   price: component.price,
@@ -338,6 +462,17 @@ export class OrdersService {
               },
               select: orderSelect(user),
             });
+            if (apparel && variant && !readyMade) {
+              // Atomic: concurrent orders for the last Red / S cannot both succeed.
+              const reserved = await tx.garmentVariant.updateMany({
+                where: { id: variant.id, isActive: true, stock: { gte: 1 } },
+                data: { stock: { decrement: 1 } },
+              });
+              if (reserved.count !== 1)
+                throw new BadRequestException(
+                  `${variant.garment.name} in ${variant.colorName} / ${variant.size} just sold out`,
+                );
+            }
             // Stable lock order prevents two multi-component orders locking inventory in opposite order.
             for (const [subCategoryId, requestedQuantity] of [
               ...quantities,
@@ -557,6 +692,7 @@ export class OrdersService {
         product: {
           ...snapshot.product,
           selectedSize: snapshot.product.selectedSize ?? null,
+          selectedOptions: snapshot.product.selectedOptions ?? null,
         },
       } as T;
     // A current product size is not evidence of the size bought in a legacy order.
@@ -567,7 +703,11 @@ export class OrdersService {
     )
       return {
         ...order,
-        product: { ...order.product, selectedSize: null },
+        product: {
+          ...order.product,
+          selectedSize: null,
+          selectedOptions: null,
+        },
       } as T;
     return order;
   }

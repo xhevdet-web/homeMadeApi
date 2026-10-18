@@ -68,6 +68,8 @@ export class StorageService implements OnModuleDestroy {
   async upload(
     file: Express.Multer.File,
     folder = 'uploads',
+    // false keeps the upload untouched (fine logos, lettering, production originals).
+    process = true,
   ): Promise<{ key: string }> {
     validateImage(file);
     if (
@@ -76,7 +78,10 @@ export class StorageService implements OnModuleDestroy {
     )
       throw new BadRequestException('Invalid storage folder');
     // Entity folders select processing centrally for both create and replacement uploads.
-    if (folder === 'subcategories' || folder === 'products')
+    if (
+      process &&
+      ['categories', 'subcategories', 'products', 'garments'].includes(folder)
+    )
       file = await this.processing.process(file);
     const extension = validateImage(file);
     const key = folder + '/' + randomUUID() + extension;

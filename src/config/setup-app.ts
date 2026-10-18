@@ -10,7 +10,7 @@ export function setupApp(app: INestApplication): void {
       : ['http://localhost:8081', 'http://127.0.0.1:8081']);
   app.enableCors({
     origin: origins,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   });
   app.setGlobalPrefix('api/v1');

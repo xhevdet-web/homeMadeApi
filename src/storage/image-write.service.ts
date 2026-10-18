@@ -24,7 +24,7 @@ export class ImageWriteService {
   }
 
   async saveMany<T>(
-    uploads: { file?: Express.Multer.File; folder: string }[],
+    uploads: { file?: Express.Multer.File; folder: string; process?: boolean }[],
     write: (keys: (string | undefined)[]) => Promise<{
       result: T;
       oldKeys?: (string | null | undefined)[];
@@ -33,9 +33,11 @@ export class ImageWriteService {
     const keys: (string | undefined)[] = [];
     let saved: Awaited<ReturnType<typeof write>>;
     try {
-      for (const { file, folder } of uploads)
+      for (const { file, folder, process } of uploads)
         keys.push(
-          file ? (await this.storage.upload(file, folder)).key : undefined,
+          file
+            ? (await this.storage.upload(file, folder, process ?? true)).key
+            : undefined,
         );
       saved = await write(keys);
     } catch (error) {

@@ -1,5 +1,6 @@
 import { ImageWriteService } from '../../storage/image-write.service.js';
 import {
+  BadRequestException,
   ConflictException,
   HttpException,
   Inject,
@@ -11,6 +12,8 @@ import { PrismaService } from '../../database/prisma.service.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import type { CreateCategoryDto } from './dto/create-category.dto.js';
 import type { UpdateCategoryDto } from './dto/update-category.dto.js';
+import { validateCategoryOptions } from './category-options.js';
+import { validateBuilderConfig } from './builder-config.js';
 
 const orderBy = [
   { sortOrder: 'asc' },
@@ -25,11 +28,22 @@ export class CategoriesService {
     @Inject(ImageWriteService) private readonly images: ImageWriteService,
   ) {}
 
-  create(dto: CreateCategoryDto, file?: Express.Multer.File) {
-    return this.images.save(file, 'categories', async (key) => ({
+  async create(dto: CreateCategoryDto, file?: Express.Multer.File) {
+    await this.validateDesignLibrary(undefined, dto.designCategoryId);
+    const created = await this.images.save(file, 'categories', async (key) => ({
       result: await this.query(() =>
         this.prisma.category.create({
           data: {
+            builderType: dto.builderType,
+            designCategoryId: dto.designCategoryId,
+            options:
+              dto.options === null
+                ? Prisma.DbNull
+                : validateCategoryOptions(dto.options),
+            builderConfig:
+              dto.builderConfig === null
+                ? Prisma.DbNull
+                : validateBuilderConfig(dto.builderConfig),
             sizes:
               dto.sizes === null
                 ? Prisma.DbNull
@@ -52,6 +66,9 @@ export class CategoriesService {
         }),
       ),
     }));
+    if (created.builderType === 'APPAREL')
+      await this.ensureOwnDesign(created.id);
+    return created;
   }
 
   findAll() {
@@ -73,16 +90,77 @@ export class CategoriesService {
     const category = await this.query(() =>
       this.prisma.category.findUnique({
         where: { id },
-        select: { subCategories: { orderBy, include: { category: true } } },
+        select: {
+          subCategories: { orderBy, include: { category: true } },
+          // Designs shared from a library category are offered alongside the category's own.
+          designCategory: {
+            select: { subCategories: { orderBy, include: { category: true } } },
+          },
+        },
       }),
     );
     if (!category) throw new NotFoundException('Category not found');
-    return category.subCategories;
+    return [
+      ...category.subCategories,
+      ...(category.designCategory?.subCategories ?? []),
+    ];
+  }
+
+  // APPAREL categories always offer "Your own design": customers upload their artwork
+  // for this design's price (charged once per design). Admins may edit or deactivate it.
+  private async ensureOwnDesign(categoryId: string) {
+    const existing = await this.query(() =>
+      this.prisma.subCategory.findMany({
+        where: { categoryId, type: 'CUSTOM_UPLOAD' },
+        select: { id: true },
+        take: 1,
+      }),
+    );
+    if (existing.length) return;
+    await this.query(() =>
+      this.prisma.subCategory.create({
+        data: {
+          categoryId,
+          name: 'Your own design',
+          description: 'Upload your own artwork to print on your piece.',
+          type: 'CUSTOM_UPLOAD',
+          price: 500,
+          stock: 0,
+          trackStock: false,
+        },
+      }),
+    );
+  }
+
+  // A design library must exist, cannot be the category itself and cannot chain to
+  // another library, so a design always has exactly one owner category.
+  private async validateDesignLibrary(
+    id: string | undefined,
+    libraryId?: string | null,
+  ) {
+    if (!libraryId) return;
+    if (libraryId === id)
+      throw new BadRequestException(
+        'A category cannot use itself as its design library',
+      );
+    const library = await this.query(() =>
+      this.prisma.category.findUnique({
+        where: { id: libraryId },
+        select: { id: true, designCategoryId: true },
+      }),
+    );
+    if (!library)
+      throw new BadRequestException('Design library category not found');
+    if (library.designCategoryId)
+      throw new BadRequestException(
+        'A design library cannot itself use another design library',
+      );
   }
 
   async update(id: string, dto: UpdateCategoryDto, file?: Express.Multer.File) {
+    await this.validateDesignLibrary(id, dto.designCategoryId);
     const previous = file ? await this.findOne(id) : undefined;
-    return this.images.save(file, 'categories', async (key) => ({
+    const updated = await this.images.save(file, 'categories', async (key) => ({
       result: await this.query(() =>
         this.prisma.category.update({
           where: {
@@ -90,6 +168,16 @@ export class CategoriesService {
             ...(key ? { imageKey: previous?.imageKey ?? null } : {}),
           },
           data: {
+            builderType: dto.builderType,
+            designCategoryId: dto.designCategoryId,
+            options:
+              dto.options === null
+                ? Prisma.DbNull
+                : validateCategoryOptions(dto.options),
+            builderConfig:
+              dto.builderConfig === null
+                ? Prisma.DbNull
+                : validateBuilderConfig(dto.builderConfig),
             sizes:
               dto.sizes === null
                 ? Prisma.DbNull
@@ -113,6 +201,9 @@ export class CategoriesService {
       ),
       oldKeys: key ? [previous?.imageKey] : [],
     }));
+    if (updated.builderType === 'APPAREL')
+      await this.ensureOwnDesign(updated.id);
+    return updated;
   }
 
   async remove(id: string): Promise<void> {

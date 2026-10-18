@@ -11,11 +11,35 @@ import {
   Max,
   Min,
   ValidateIf,
+  IsIn,
+  IsUUID,
 } from 'class-validator';
 
 import { CategorySizeDto } from './category-size.dto.js';
 
+// Multipart cannot carry null, so clients send "" to clear nullable fields.
+export const emptyToNull = ({ value }: { value: unknown }) =>
+  value === '' ? null : value;
+
 export class CreateCategoryDto {
+  // Shared design library: use another category's designs (validated in the service).
+  @Transform(emptyToNull)
+  @IsOptional()
+  @IsUUID()
+  designCategoryId?: string | null;
+
+  @IsOptional()
+  options?: unknown[] | null;
+
+  // Validated in the service by validateBuilderConfig.
+  @IsOptional()
+  builderConfig?: Record<string, unknown> | null;
+
+  @Transform(emptyToNull)
+  @IsOptional()
+  @IsIn(['JEWELRY', 'BOUQUET', 'GIFT', 'APPAREL'])
+  builderType?: 'JEWELRY' | 'BOUQUET' | 'GIFT' | 'APPAREL' | null;
+
   @IsOptional()
   @IsArray()
   @ArrayUnique((size: CategorySizeDto) => size?.id)

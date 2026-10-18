@@ -99,6 +99,12 @@ describe('Customer delivery profile and checkout', () => {
     product.findUnique.mockResolvedValue({
       id: productId,
       createdById: id,
+      category: {
+        id: 'dc78a80a-ce2b-4c45-8076-fca001c71418',
+        builderType: null,
+        basePrice: null,
+        stock: null,
+      },
       items: [
         {
           subCategoryId: componentId,

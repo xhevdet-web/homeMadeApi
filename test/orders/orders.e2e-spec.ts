@@ -46,6 +46,12 @@ describe('Orders HTTP', () => {
     id: productId,
     createdById: userId,
     price: 2999,
+    basePrice: 0,
+    garmentVariant: null,
+    category: {
+      id: otherId,
+      builderType: null,
+    },
     items: [
       {
         subCategoryId: otherId,
@@ -91,6 +97,8 @@ describe('Orders HTTP', () => {
     delete: vi.fn(),
   };
   const subCategory = { updateMany: vi.fn(), findUnique: vi.fn() };
+  const category = { updateMany: vi.fn() };
+  const garmentVariant = { updateMany: vi.fn() };
   const storage = {
     copy: vi.fn(),
     delete: vi.fn(),
@@ -102,6 +110,8 @@ describe('Orders HTTP', () => {
     product,
     order,
     subCategory,
+    category,
+    garmentVariant,
     $queryRaw: vi.fn(),
     $transaction: vi.fn(),
   };
@@ -158,6 +168,8 @@ describe('Orders HTTP', () => {
     );
     prisma.$queryRaw.mockResolvedValue([]);
     subCategory.updateMany.mockResolvedValue({ count: 1 });
+    category.updateMany.mockResolvedValue({ count: 1 });
+    garmentVariant.updateMany.mockResolvedValue({ count: 1 });
     user.findUnique.mockResolvedValue(account);
     product.findUnique.mockResolvedValue({
       ...productRecord,
@@ -208,6 +220,112 @@ describe('Orders HTTP', () => {
     expect(order.create.mock.calls[0][0].data).toMatchObject({
       totalPrice: 4500,
       designSnapshot: { product: { productType: 'READY_MADE', price: 4500 } },
+    });
+  });
+
+  const variantId = 'c7d1f0a4-2a71-46c6-bfba-a453d847044f';
+  const variant = {
+    id: variantId,
+    size: 'S',
+    colorName: 'Red',
+    colorValue: '#C0392B',
+    sku: 'HOOD-RED-S',
+    isActive: true,
+    garment: {
+      id: otherId,
+      name: 'Classic Hoodie',
+      isActive: true,
+      imageKey: null,
+      frontImageKey: null,
+      backImageKey: null,
+      frontPrintArea: { x: 0.3, y: 0.28, width: 0.4, height: 0.42, widthCm: 30, heightCm: 40 },
+      backPrintArea: null,
+      silhouette: 'HOODIE',
+    },
+  };
+  const apparelProduct = (overrides: object = {}) => ({
+    ...productRecord,
+    basePrice: 3500,
+    garmentVariant: variant,
+    category: { ...productRecord.category, builderType: 'APPAREL', options: [] },
+    ...overrides,
+  });
+
+  it('orders an option-only apparel creation and snapshots its garment and selections', async () => {
+    const selectedOptions = { message: 'For Ana' };
+    product.findUnique.mockResolvedValue(apparelProduct({ selectedOptions, items: [] }));
+    await post(body).expect(201);
+    expect(subCategory.updateMany).not.toHaveBeenCalled();
+    expect(order.create.mock.calls[0][0].data.designSnapshot.product).toMatchObject({
+      selectedOptions,
+      itemCount: 0,
+      price: 3500,
+      basePrice: 3500,
+      garmentVariant: {
+        id: variantId,
+        size: 'S',
+        colorName: 'Red',
+        sku: 'HOOD-RED-S',
+        // Production needs the print area as it was when the order was placed.
+        garment: {
+          name: 'Classic Hoodie',
+          frontPrintArea: variant.garment.frontPrintArea,
+          backPrintArea: null,
+          silhouette: 'HOODIE',
+        },
+      },
+    });
+    // Stock is reserved on the exact size × colour, never on the category.
+    expect(garmentVariant.updateMany).toHaveBeenCalledWith({
+      where: { id: variantId, isActive: true, stock: { gte: 1 } },
+      data: { stock: { decrement: 1 } },
+    });
+    expect(category.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('adds the garment price to designs and decrements variant and design stock', async () => {
+    product.findUnique.mockResolvedValue(apparelProduct());
+    await post(body).expect(201);
+    expect(order.create.mock.calls[0][0].data.totalPrice).toBe(3500 + 2999);
+    expect(garmentVariant.updateMany).toHaveBeenCalledTimes(1);
+    expect(subCategory.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a sold-out size and colour without creating the order', async () => {
+    product.findUnique.mockResolvedValue(apparelProduct());
+    garmentVariant.updateMany.mockResolvedValue({ count: 0 });
+    const response = await post(body).expect(400);
+    expect(response.body.message).toBe('Classic Hoodie in Red / S just sold out');
+    expect(prisma.$transaction).toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ garmentVariant: null }, 'Choose a garment size and colour before ordering this design'],
+    [{ garmentVariant: { ...variant, isActive: false } }, 'Classic Hoodie in Red / S is no longer available'],
+    [
+      { garmentVariant: { ...variant, garment: { ...variant.garment, isActive: false } } },
+      'Classic Hoodie in Red / S is no longer available',
+    ],
+  ])('rejects apparel without an available garment %j', async (overrides, message) => {
+    product.findUnique.mockResolvedValue(apparelProduct(overrides));
+    const response = await post(body).expect(400);
+    expect(response.body.message).toBe(message);
+    expect(order.create).not.toHaveBeenCalled();
+    expect(garmentVariant.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('never decrements unlimited printed designs', async () => {
+    product.findUnique.mockResolvedValue(apparelProduct({
+      items: productRecord.items.map((item) => ({
+        ...item,
+        side: 'FRONT', x: 0.5, y: 0.4, scale: 1.2, rotation: 15,
+        subCategory: { ...item.subCategory, stock: 0, trackStock: false },
+      })),
+    }));
+    await post(body).expect(201);
+    expect(subCategory.updateMany).not.toHaveBeenCalled();
+    expect(order.create.mock.calls[0][0].data.designSnapshot.product.items[0]).toMatchObject({
+      side: 'FRONT', x: 0.5, y: 0.4, scale: 1.2, rotation: 15,
     });
   });
 
@@ -318,6 +436,7 @@ describe('Orders HTTP', () => {
         description: true,
 
         imageKey: true,
+        originalImageKey: true,
         color: true,
         type: true,
         price: true,

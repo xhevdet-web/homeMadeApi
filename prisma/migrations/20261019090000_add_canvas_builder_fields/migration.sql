@@ -1,0 +1,13 @@
+ALTER TABLE "categories"
+ADD COLUMN "builder_config" JSONB;
+
+ALTER TABLE "products"
+ADD COLUMN "back_design_preview_key" TEXT,
+ADD COLUMN "base_price" INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE "product_items"
+ADD COLUMN "side" TEXT,
+ADD COLUMN "x" DOUBLE PRECISION,
+ADD COLUMN "y" DOUBLE PRECISION,
+ADD COLUMN "scale" DOUBLE PRECISION,
+ADD COLUMN "rotation" DOUBLE PRECISION;

@@ -12,6 +12,16 @@ import { Prisma } from '../../generated/prisma/client.js';
 import type { CreateSubCategoryDto } from './dto/create-sub-category.dto.js';
 import type { UpdateSubCategoryDto } from './dto/update-sub-category.dto.js';
 
+// The display image gets background removal unless disabled; when it is processed, the
+// untouched upload is also kept so production can print from the original file.
+function uploads(file: Express.Multer.File | undefined, removeBackground?: boolean) {
+  const process = removeBackground !== false;
+  return [
+    { file, folder: 'subcategories', process },
+    { file: process ? file : undefined, folder: 'originals', process: false },
+  ];
+}
+
 const orderBy = [
   { sortOrder: 'asc' },
   { name: 'asc' },
@@ -27,7 +37,7 @@ export class SubCategoriesService {
 
   async create(dto: CreateSubCategoryDto, file?: Express.Multer.File) {
     await this.requireCategory(dto.categoryId);
-    return this.images.save(file, 'subcategories', async (key) => ({
+    return this.images.saveMany(uploads(file, dto.removeBackground), async ([key, originalKey]) => ({
       result: await this.query(() =>
         this.prisma.subCategory.create({
           data: {
@@ -36,10 +46,12 @@ export class SubCategoriesService {
             description: dto.description,
 
             imageKey: key,
+            originalImageKey: originalKey,
             color: dto.color,
             type: dto.type,
             price: dto.price,
             stock: dto.stock,
+            trackStock: dto.trackStock,
             isActive: dto.isActive,
             sortOrder: dto.sortOrder,
           },
@@ -87,7 +99,7 @@ export class SubCategoriesService {
     const previous = await this.findOne(id);
     if (dto.categoryId !== undefined)
       await this.requireCategory(dto.categoryId);
-    return this.images.save(file, 'subcategories', async (key) => ({
+    return this.images.saveMany(uploads(file, dto.removeBackground), async ([key, originalKey]) => ({
       result: await this.query(() =>
         this.prisma.subCategory.update({
           where: {
@@ -100,17 +112,20 @@ export class SubCategoriesService {
             description: dto.description,
 
             imageKey: key,
+            // A new upload replaces the production original too (null when unprocessed).
+            originalImageKey: key ? (originalKey ?? null) : undefined,
             color: dto.color,
             type: dto.type,
             price: dto.price,
             stock: dto.stock,
+            trackStock: dto.trackStock,
             isActive: dto.isActive,
             sortOrder: dto.sortOrder,
           },
           include: { category: true },
         }),
       ),
-      oldKeys: key ? [previous?.imageKey] : [],
+      oldKeys: key ? [previous?.imageKey, previous?.originalImageKey] : [],
     }));
   }
 
@@ -118,10 +133,10 @@ export class SubCategoriesService {
     const record = await this.query(() =>
       this.prisma.subCategory.delete({
         where: { id },
-        select: { imageKey: true },
+        select: { imageKey: true, originalImageKey: true },
       }),
     );
-    await this.images.cleanup([record.imageKey]);
+    await this.images.cleanup([record.imageKey, record.originalImageKey]);
   }
 
   private async query<T>(operation: () => Promise<T>): Promise<T> {

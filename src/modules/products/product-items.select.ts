@@ -9,6 +9,12 @@ export const productItemsSelect = {
     quantity: true,
     position: true,
     unitPrice: true,
+    customImageKey: true,
+    side: true,
+    x: true,
+    y: true,
+    scale: true,
+    rotation: true,
     createdAt: true,
     updatedAt: true,
     subCategory: {
@@ -19,6 +25,7 @@ export const productItemsSelect = {
         description: true,
 
         imageKey: true,
+        originalImageKey: true,
         color: true,
         type: true,
         price: true,
@@ -26,3 +33,27 @@ export const productItemsSelect = {
     },
   },
 } satisfies Prisma.Product$itemsArgs;
+
+// The garment a design is printed on, shared by product and order responses.
+export const garmentVariantSelect = {
+  id: true,
+  size: true,
+  colorName: true,
+  colorValue: true,
+  sku: true,
+  price: true,
+  isActive: true,
+  garment: {
+    select: {
+      id: true,
+      name: true,
+      basePrice: true,
+      imageKey: true,
+      frontImageKey: true,
+      backImageKey: true,
+      frontPrintArea: true,
+      backPrintArea: true,
+      silhouette: true,
+    },
+  },
+} satisfies Prisma.GarmentVariantSelect;

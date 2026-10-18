@@ -11,11 +11,32 @@ import {
   Max,
   Min,
   ValidateIf,
+  IsIn,
+  IsUUID,
 } from 'class-validator';
 
 import { CategorySizeDto } from './category-size.dto.js';
+import { emptyToNull } from './create-category.dto.js';
 
 export class UpdateCategoryDto {
+  // Shared design library: use another category's designs (validated in the service).
+  @Transform(emptyToNull)
+  @IsOptional()
+  @IsUUID()
+  designCategoryId?: string | null;
+
+  @IsOptional()
+  options?: unknown[] | null;
+
+  // Validated in the service by validateBuilderConfig.
+  @IsOptional()
+  builderConfig?: Record<string, unknown> | null;
+
+  @Transform(emptyToNull)
+  @IsOptional()
+  @IsIn(['JEWELRY', 'BOUQUET', 'GIFT', 'APPAREL'])
+  builderType?: 'JEWELRY' | 'BOUQUET' | 'GIFT' | 'APPAREL' | null;
+
   @IsOptional()
   @IsArray()
   @ArrayUnique((size: CategorySizeDto) => size?.id)

@@ -29,15 +29,13 @@ export class ImageResponseInterceptor implements NestInterceptor {
     const result = Object.fromEntries(
       Object.entries(record).map(([key, item]) => [key, this.images(item)]),
     );
-    if (record.imageKey === null || typeof record.imageKey === 'string')
-      result.imageUrl = this.storage.getPublicUrl(record.imageKey);
-    if (
-      record.designPreviewKey === null ||
-      typeof record.designPreviewKey === 'string'
-    )
-      result.designPreviewUrl = this.storage.getPublicUrl(
-        record.designPreviewKey,
-      );
+    // imageKey, frontImageKey, originalImageKey, designPreviewKey, backDesignPreviewKey…
+    for (const [key, item] of Object.entries(record))
+      if (
+        /^(?:imageKey|[a-z][A-Za-z]*(?:ImageKey|PreviewKey))$/.test(key) &&
+        (item === null || typeof item === 'string')
+      )
+        result[key.replace(/Key$/, 'Url')] = this.storage.getPublicUrl(item);
     return result;
   }
 }

@@ -50,14 +50,25 @@ class MultipartFieldsInterceptor implements NestInterceptor {
     // Preserve strict JSON DTO validation. Only multipart transports numbers/booleans as text.
     if (request.is('multipart/form-data')) {
       const body = request.body as Record<string, unknown>;
-      for (const field of ['price', 'stock', 'sortOrder']) {
+      for (const field of ['price', 'basePrice', 'stock', 'sortOrder']) {
         const value = body[field];
         if (typeof value === 'string' && /^-?\d+$/.test(value))
           body[field] = Number(value);
       }
-      if (body.isActive === 'true') body.isActive = true;
-      if (body.isActive === 'false') body.isActive = false;
-      for (const field of ['items', 'sizes']) {
+      for (const field of ['isActive', 'trackStock', 'removeBackground']) {
+        if (body[field] === 'true') body[field] = true;
+        if (body[field] === 'false') body[field] = false;
+      }
+      for (const field of [
+        'items',
+        'sizes',
+        'options',
+        'selectedOptions',
+        'textLayers',
+        'builderConfig',
+        'frontPrintArea',
+        'backPrintArea',
+      ]) {
         if (typeof body[field] === 'string') {
           try {
             body[field] = JSON.parse(body[field]) as unknown;
@@ -72,7 +83,7 @@ class MultipartFieldsInterceptor implements NestInterceptor {
 }
 
 export function ImageUpload(
-  entity: 'category' | 'subCategory' | 'product',
+  entity: 'category' | 'subCategory' | 'product' | 'garment',
   update = false,
 ) {
   const properties: Record<string, object> = {
@@ -85,7 +96,64 @@ export function ImageUpload(
       description: 'Optional JPEG, PNG or WebP, maximum 5 MB.',
     },
   };
-  if (entity === 'category')
+  if (entity === 'garment') {
+    delete properties.file;
+    const printArea = {
+      description:
+        'Printable area as fractions of the mockup, with optional real print size: ' +
+        '{ x, y, width, height, widthCm?, heightCm? }. Multipart: JSON.stringify(area).',
+      nullable: true,
+      oneOf: [{ type: 'string' }, { type: 'object' }],
+    };
+    Object.assign(properties, {
+      basePrice: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Blank garment price in cents.',
+      },
+      silhouette: {
+        type: 'string',
+        nullable: true,
+        description: 'App-drawn fallback, e.g. HOODIE or TSHIRT.',
+      },
+      frontPrintArea: printArea,
+      backPrintArea: printArea,
+      image: {
+        type: 'string',
+        format: 'binary',
+        description: 'Product photo shown to customers.',
+      },
+      frontImage: {
+        type: 'string',
+        format: 'binary',
+        description: 'Front mockup used as the studio canvas.',
+      },
+      backImage: {
+        type: 'string',
+        format: 'binary',
+        description: 'Back mockup used as the studio canvas.',
+      },
+    });
+  }
+  if (entity === 'category') {
+    properties.designCategoryId = {
+      type: 'string',
+      format: 'uuid',
+      nullable: true,
+      description:
+        'Use the designs (sub-categories) of this library category too.',
+    };
+    properties.builderType = {
+      type: 'string',
+      nullable: true,
+      enum: ['JEWELRY', 'BOUQUET', 'GIFT', 'APPAREL'],
+    };
+    properties.options = {
+      description:
+        'Optional dynamic option definitions or null. Multipart: JSON.stringify(options).',
+      nullable: true,
+      oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'object' } }],
+    };
     properties.sizes = {
       description:
         'Optional sizes array or null. Multipart: JSON.stringify(sizes). Size IDs must be unique.',
@@ -108,12 +176,26 @@ export function ImageUpload(
         },
       ],
     };
-  if (entity === 'product')
+  }
+  if (entity === 'product') {
     properties.selectedSizeId = {
       type: 'string',
       description:
         'Optional size ID resolved from the selected category. Omit on update to preserve the size snapshot.',
     };
+    properties.selectedOptions = {
+      description:
+        'Selections validated against Category.options. Multipart: JSON.stringify(selectedOptions).',
+      nullable: true,
+      oneOf: [{ type: 'string' }, { type: 'object' }],
+    };
+    properties.textLayers = {
+      description:
+        'GIFT only: personalised text [{ id, text, x, y, scale, rotation, color?, font? }], x/y 0–1 of the canvas. Multipart: JSON.stringify(textLayers).',
+      nullable: true,
+      oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'object' } }],
+    };
+  }
   if (entity !== 'category')
     properties.categoryId = { type: 'string', format: 'uuid' };
   if (entity !== 'product')
@@ -128,6 +210,16 @@ export function ImageUpload(
         description: 'Price per component in cents',
       },
       stock: { type: 'integer', minimum: 0 },
+      trackStock: {
+        type: 'boolean',
+        description:
+          'false for unlimited printed designs; physical items keep stock.',
+      },
+      removeBackground: {
+        type: 'boolean',
+        description:
+          'Upload only. false keeps fine logos and lettering exactly as uploaded.',
+      },
     });
   if (entity === 'product')
     Object.assign(properties, {
@@ -184,10 +276,25 @@ export function ImageUpload(
       description:
         'Optional generated design preview, JPEG, PNG or WebP, maximum 5 MB.',
     };
+  if (entity === 'product')
+    properties.backDesignPreview = {
+      type: 'string',
+      format: 'binary',
+      description:
+        'Optional back-side preview for two-sided APPAREL designs, maximum 5 MB.',
+    };
+  if (entity === 'product')
+    properties.customDesigns = {
+      type: 'array',
+      maxItems: 4,
+      items: { type: 'string', format: 'binary' },
+      description:
+        'Customer artwork for "Your own design" (CUSTOM_UPLOAD) items; each item references one by customDesignIndex.',
+    };
   const options = {
     limits: {
       fileSize: MAX_IMAGE_BYTES,
-      files: entity === 'product' ? 2 : 1,
+      files: entity === 'product' ? 7 : entity === 'garment' ? 3 : 1,
       fields: 20,
       fieldSize: 1024 * 1024,
     },
@@ -216,7 +323,11 @@ export function ImageUpload(
         properties,
         required: update
           ? []
-          : ['name', ...(entity !== 'category' ? ['categoryId'] : [])],
+          : [
+              'name',
+              ...(entity !== 'category' ? ['categoryId'] : []),
+              ...(entity === 'garment' ? ['basePrice'] : []),
+            ],
       },
     }),
     UseFilters(UploadSizeFilter),
@@ -226,10 +337,21 @@ export function ImageUpload(
             [
               { name: 'file', maxCount: 1 },
               { name: 'designPreview', maxCount: 1 },
+              { name: 'backDesignPreview', maxCount: 1 },
+              { name: 'customDesigns', maxCount: 4 },
             ],
             options,
           )
-        : FileInterceptor('file', options),
+        : entity === 'garment'
+          ? FileFieldsInterceptor(
+              [
+                { name: 'image', maxCount: 1 },
+                { name: 'frontImage', maxCount: 1 },
+                { name: 'backImage', maxCount: 1 },
+              ],
+              options,
+            )
+          : FileInterceptor('file', options),
       MultipartFieldsInterceptor,
     ),
   );

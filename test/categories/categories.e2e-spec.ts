@@ -83,6 +83,182 @@ describe('Categories and SubCategories HTTP CRUD', () => {
     unit: 'cm',
     maxItems: 18,
   };
+  const apparelOptions = [
+    {
+      key: 'size',
+      name: 'Size',
+      type: 'select',
+      required: true,
+      values: ['S', 'M', 'L'],
+    },
+    {
+      key: 'color',
+      name: 'Color',
+      type: 'color',
+      required: true,
+      values: [{ name: 'Black', value: '#000000' }],
+    },
+  ];
+  it('saves builderType and validated dynamic options from JSON and FormData', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .send({ name: 'Hoodie', builderType: 'APPAREL', options: apparelOptions })
+      .expect(201);
+    expect(category.create.mock.calls[0][0].data).toMatchObject({
+      builderType: 'APPAREL',
+      options: apparelOptions,
+    });
+    await request(app.getHttpServer())
+      .patch('/api/v1/categories/' + id)
+      .field('builderType', 'APPAREL')
+      .field('options', JSON.stringify(apparelOptions))
+      .expect(200);
+    expect(category.update.mock.calls[0][0].data.options).toEqual(
+      apparelOptions,
+    );
+  });
+  it.each([
+    { builderType: 'CLOTHING' },
+    { options: {} },
+    { options: [{ ...apparelOptions[0], key: 'bad key' }] },
+    { options: [apparelOptions[0], apparelOptions[0]] },
+    { options: [{ ...apparelOptions[0], values: ['M', 'M'] }] },
+    {
+      options: [
+        {
+          key: 'count',
+          name: 'Count',
+          type: 'number',
+          required: false,
+          min: 10,
+          max: 2,
+        },
+      ],
+    },
+    {
+      options: [
+        {
+          key: 'text',
+          name: 'Text',
+          type: 'text',
+          required: false,
+          maxLength: 0,
+        },
+      ],
+    },
+  ])('rejects invalid builder configuration %j', async (invalid) => {
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .send({ name: 'Invalid', ...invalid })
+      .expect(400);
+    expect(category.create).not.toHaveBeenCalled();
+  });
+  it('supports null and empty dynamic configuration', async () => {
+    await request(app.getHttpServer())
+      .patch('/api/v1/categories/' + id)
+      .send({ builderType: null, options: null })
+      .expect(200);
+    expect(category.update.mock.calls[0][0].data).toMatchObject({
+      builderType: null,
+      options: Prisma.DbNull,
+    });
+    await request(app.getHttpServer())
+      .patch('/api/v1/categories/' + id)
+      .send({ options: [] })
+      .expect(200);
+    expect(category.update.mock.calls[1][0].data.options).toEqual([]);
+  });
+  const libraryId = 'e1d1f0a4-2a71-46c6-bfba-a453d847044f';
+  it('gives every APPAREL category a "Your own design" upload design, once', async () => {
+    category.create.mockResolvedValue({
+      id,
+      name: 'Hoodies',
+      builderType: 'APPAREL',
+    });
+    subCategory.findMany.mockResolvedValue([]);
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .send({ name: 'Hoodies', builderType: 'APPAREL' })
+      .expect(201);
+    expect(subCategory.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        categoryId: id,
+        type: 'CUSTOM_UPLOAD',
+        price: 500,
+        trackStock: false,
+      }),
+    });
+    subCategory.create.mockClear();
+    subCategory.findMany.mockResolvedValue([{ id: 'own' }]);
+    category.update.mockResolvedValue({
+      id,
+      name: 'Hoodies',
+      builderType: 'APPAREL',
+    });
+    await request(app.getHttpServer())
+      .patch('/api/v1/categories/' + id)
+      .send({ name: 'Hoodies' })
+      .expect(200);
+    expect(subCategory.create).not.toHaveBeenCalled();
+  });
+  it('links a shared design library from JSON and FormData, and clears it', async () => {
+    category.findUnique.mockResolvedValue({
+      id: libraryId,
+      designCategoryId: null,
+    });
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .field('name', 'Hoodies')
+      .field('builderType', 'APPAREL')
+      .field('designCategoryId', libraryId)
+      .expect(201);
+    expect(category.create.mock.calls[0][0].data).toMatchObject({
+      builderType: 'APPAREL',
+      designCategoryId: libraryId,
+    });
+    await request(app.getHttpServer())
+      .patch('/api/v1/categories/' + id)
+      .field('name', 'Rings')
+      .field('builderType', '')
+      .field('designCategoryId', '')
+      .expect(200);
+    expect(category.update.mock.calls[0][0].data).toMatchObject({
+      builderType: null,
+      designCategoryId: null,
+    });
+  });
+  it.each([
+    [{ designCategoryId: 'not-a-uuid' }, null],
+    [{ designCategoryId: libraryId }, null],
+    [{ designCategoryId: libraryId }, { id: libraryId, designCategoryId: id }],
+  ])('rejects an invalid design library %j', async (invalid, library) => {
+    category.findUnique.mockResolvedValue(library);
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .send({ name: 'Invalid library', ...invalid })
+      .expect(400);
+    expect(category.create).not.toHaveBeenCalled();
+  });
+  it('rejects a category that uses itself as its design library', async () => {
+    await request(app.getHttpServer())
+      .patch('/api/v1/categories/' + id)
+      .send({ designCategoryId: id })
+      .expect(400);
+    expect(category.update).not.toHaveBeenCalled();
+  });
+  it("offers shared library designs alongside the category's own", async () => {
+    category.findUnique.mockResolvedValue({
+      subCategories: [{ id: 'own' }],
+      designCategory: { subCategories: [{ id: 'shared' }] },
+    });
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/categories/' + id + '/sub-categories')
+      .expect(200);
+    expect(response.body.map((item: { id: string }) => item.id)).toEqual([
+      'own',
+      'shared',
+    ]);
+  });
   it.each([null, [], [size]])('saves optional sizes %j', async (sizes) => {
     await request(app.getHttpServer())
       .post('/api/v1/categories')

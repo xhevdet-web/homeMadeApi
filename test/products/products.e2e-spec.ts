@@ -34,6 +34,7 @@ describe('Products HTTP CRUD', () => {
   const subCategory = delegate();
   const user = delegate();
   const order = delegate();
+  const garmentVariant = delegate();
   const creator = {
     id: userId,
     firstName: 'Test',
@@ -65,6 +66,7 @@ describe('Products HTTP CRUD', () => {
     subCategory,
     user,
     order,
+    garmentVariant,
     $queryRaw: vi.fn(),
     $transaction: vi.fn(),
   };
@@ -108,7 +110,7 @@ describe('Products HTTP CRUD', () => {
     order.findMany.mockResolvedValue([]);
     product.create.mockResolvedValue(record);
     product.update.mockResolvedValue(record);
-    product.delete.mockResolvedValue({ id });
+    product.delete.mockResolvedValue({ id, items: [] });
   });
   afterAll(async () => {
     await app?.close();
@@ -122,6 +124,210 @@ describe('Products HTTP CRUD', () => {
     unit: 'cm',
     maxItems: 18,
   };
+  const apparelOptions = [
+    {
+      key: 'size',
+      name: 'Size',
+      type: 'select',
+      required: true,
+      values: ['S', 'M', 'L'],
+    },
+    {
+      key: 'color',
+      name: 'Color',
+      type: 'color',
+      required: true,
+      values: [
+        { name: 'Black', value: '#000000' },
+        { name: 'White', value: '#FFFFFF' },
+      ],
+    },
+  ];
+  const variantId = 'c7d1f0a4-2a71-46c6-bfba-a453d847044f';
+  const libraryId = 'e1d1f0a4-2a71-46c6-bfba-a453d847044f';
+  const variant = (overrides: object = {}) => ({
+    id: variantId,
+    size: 'S',
+    colorName: 'Red',
+    stock: 1,
+    price: null,
+    isActive: true,
+    garment: { categoryId, isActive: true, basePrice: 3500, name: 'Classic Hoodie' },
+    ...overrides,
+  });
+  const apparelCategory = (overrides: object = {}) => {
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      builderType: 'APPAREL',
+      options: [],
+      designCategoryId: null,
+      ...overrides,
+    });
+  };
+  const placed = { side: 'FRONT', x: 0.5, y: 0.4, scale: 1.2, rotation: 15 };
+
+  it('creates an option-only apparel product priced from its garment variant', async () => {
+    apparelCategory({ options: apparelOptions });
+    garmentVariant.findUnique.mockResolvedValue(variant());
+    await request(app.getHttpServer())
+      .post(base)
+      .set('Authorization', 'Bearer ' + token)
+      .field('name', 'Custom Hoodie')
+      .field('categoryId', categoryId)
+      .field('garmentVariantId', variantId)
+      .field('selectedOptions', JSON.stringify({ size: 'L', color: '#000000' }))
+      .expect(201);
+    expect(product.create.mock.calls[0][0].data).toMatchObject({
+      selectedOptions: { size: 'L', color: { name: 'Black', value: '#000000' } },
+      garmentVariantId: variantId,
+      basePrice: 3500,
+      price: 3500,
+      itemCount: 0,
+      items: { create: [] },
+    });
+  });
+
+  it('adds the garment price (or variant override) to design prices and stores placements', async () => {
+    apparelCategory();
+    garmentVariant.findUnique.mockResolvedValue(variant({ price: 3900 }));
+    await save({ ...body, garmentVariantId: variantId, items: [{ subCategoryId, quantity: 20, ...placed }] })
+      .expect(201);
+    const data = product.create.mock.calls[0][0].data;
+    expect(data.price).toBe(3900 + 20 * 75);
+    expect(data.basePrice).toBe(3900);
+    expect(data.items.create[0]).toMatchObject(placed);
+  });
+
+  it.each([
+    [undefined, 'Choose a garment size and colour for this design'],
+    ['missing', 'Garment size and colour not found in this category'],
+    ['other-category', 'Garment size and colour not found in this category'],
+    ['inactive', 'Classic Hoodie in Red / S is no longer available'],
+    ['sold-out', 'Classic Hoodie in Red / S is sold out'],
+  ])('rejects apparel with an unavailable garment (%s)', async (state, message) => {
+    apparelCategory();
+    garmentVariant.findUnique.mockResolvedValue(
+      state === 'missing' ? null
+        : state === 'other-category' ? variant({ garment: { ...variant().garment, categoryId: otherId } })
+          : state === 'inactive' ? variant({ isActive: false })
+            : state === 'sold-out' ? variant({ stock: 0 }) : variant(),
+    );
+    const response = await save({
+      ...body,
+      ...(state ? { garmentVariantId: variantId } : {}),
+      items: [{ subCategoryId, quantity: 1, ...placed }],
+    }).expect(400);
+    expect(response.body.message).toBe(message);
+    expect(product.create).not.toHaveBeenCalled();
+  });
+
+  it('requires a placement for every apparel design', async () => {
+    apparelCategory();
+    garmentVariant.findUnique.mockResolvedValue(variant());
+    await save({ ...body, garmentVariantId: variantId }).expect(400);
+    expect(product.create).not.toHaveBeenCalled();
+  });
+
+  it('accepts designs from the shared design library and rejects unrelated designs', async () => {
+    apparelCategory({ designCategoryId: libraryId });
+    garmentVariant.findUnique.mockResolvedValue(variant());
+    subCategory.findMany.mockResolvedValue([
+      { ...record.subCategory, categoryId: libraryId, price: 75, isActive: true },
+    ]);
+    await save({ ...body, garmentVariantId: variantId, items: [{ subCategoryId, quantity: 1, ...placed }] })
+      .expect(201);
+    subCategory.findMany.mockResolvedValue([
+      { ...record.subCategory, categoryId: otherId, price: 75, isActive: true },
+    ]);
+    await save({ ...body, garmentVariantId: variantId, items: [{ subCategoryId, quantity: 1, ...placed }] })
+      .expect(400);
+  });
+
+  it('never stores placements or garments on jewelry designs', async () => {
+    category.findUnique.mockResolvedValue({ ...record.category, builderType: 'JEWELRY', options: null });
+    await save({ ...body, garmentVariantId: variantId }).expect(400);
+    await save({ ...body, items: [{ subCategoryId, quantity: 20, ...placed }] }).expect(201);
+    const item = product.create.mock.calls[0][0].data.items.create[0];
+    expect(item.side).toBeUndefined();
+    expect(item.x).toBeUndefined();
+  });
+
+  it.each(['BOUQUET', 'GIFT'])('stores one-canvas placements and layer order for %s designs', async (builderType) => {
+    category.findUnique.mockResolvedValue({ ...record.category, builderType, options: null });
+    await save({ ...body, items: [
+      { subCategoryId, quantity: 1, position: 0, ...placed },
+      { subCategoryId, quantity: 1, position: 1, x: 0.3, y: 0.6, scale: 0.8, rotation: 0 },
+    ] }).expect(201);
+    const items = product.create.mock.calls[0][0].data.items.create;
+    expect(items[0]).toMatchObject({ x: 0.5, y: 0.4, scale: 1.2, rotation: 15, position: 0 });
+    expect(items[0].side).toBeUndefined();
+    expect(items[1]).toMatchObject({ x: 0.3, y: 0.6, position: 1 });
+    product.create.mockClear();
+    await save({ ...body, items: [{ subCategoryId, quantity: 1 }] }).expect(400);
+    expect(product.create).not.toHaveBeenCalled();
+  });
+
+  const text = { id: 't1', text: '  Thank you ', x: 0.5, y: 0.7, scale: 1, rotation: 0, color: '#2D3250', font: 'SCRIPT' };
+
+  it('stores personalised text on gift designs only', async () => {
+    category.findUnique.mockResolvedValue({ ...record.category, builderType: 'GIFT', options: null });
+    await save({ ...body, items: [{ subCategoryId, quantity: 1, ...placed }], textLayers: [text] })
+      .expect(201);
+    expect(product.create.mock.calls[0][0].data.textLayers).toEqual([{ ...text, text: 'Thank you' }]);
+    for (const builderType of ['BOUQUET', 'JEWELRY']) {
+      category.findUnique.mockResolvedValue({ ...record.category, builderType, options: null });
+      const response = await save({ ...body, items: [{ subCategoryId, quantity: 1, ...placed }], textLayers: [text] })
+        .expect(400);
+      expect(response.body.message).toBe('Only gift designs can include text');
+    }
+  });
+
+  it.each([
+    [{ ...text, text: '' }],
+    [{ ...text, x: 1.5 }],
+    [{ ...text, color: 'red' }],
+    [{ ...text, font: 'COMIC' }],
+    [text, text],
+    Array.from({ length: 7 }, (_, index) => ({ ...text, id: 't' + index })),
+  ])('rejects invalid text layers %#', async (...layers) => {
+    category.findUnique.mockResolvedValue({ ...record.category, builderType: 'GIFT', options: null });
+    await save({ ...body, items: [{ subCategoryId, quantity: 1, ...placed }], textLayers: layers }).expect(400);
+    expect(product.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {},
+    { size: 'XL', color: '#000000' },
+    { size: 'L', color: '#BADBAD' },
+    { size: 'L', color: '#000000', adminMax: 99999 },
+  ])('rejects invalid selected apparel options %j', async (selectedOptions) => {
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      builderType: 'APPAREL',
+      options: apparelOptions,
+    });
+    await request(app.getHttpServer())
+      .post(base)
+      .set('Authorization', 'Bearer ' + token)
+      .send({ name: 'Custom Hoodie', categoryId, selectedOptions })
+      .expect(400);
+    expect(product.create).not.toHaveBeenCalled();
+  });
+  it('keeps component requirements for jewelry and legacy categories', async () => {
+    for (const builderType of ['JEWELRY', null]) {
+      category.findUnique.mockResolvedValue({
+        ...record.category,
+        builderType,
+        options: null,
+      });
+      await request(app.getHttpServer())
+        .post(base)
+        .set('Authorization', 'Bearer ' + token)
+        .send({ name: 'Bracelet', categoryId })
+        .expect(400);
+    }
+    expect(product.create).not.toHaveBeenCalled();
+  });
   const save = (input: object) =>
     request(app.getHttpServer())
       .post(base)

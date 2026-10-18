@@ -66,11 +66,18 @@ model User {
 }
 
 model Category {
-  sizes       Json?
-  id          String  @id @default(uuid())
-  name        String  @unique
-  description String?
-  imageKey    String? @map("image_key")
+  sizes            Json?
+  options          Json?
+  builderType      String? @map("builder_type")
+  // Builder-specific settings, e.g. the jewelry strand silhouette.
+  builderConfig    Json?   @map("builder_config")
+  // Shared design library: an APPAREL category may use the designs (SubCategories)
+  // of another category, so one logo can be offered on hoodies and T-shirts alike.
+  designCategoryId String? @map("design_category_id")
+  id               String  @id @default(uuid())
+  name             String  @unique
+  description      String?
+  imageKey         String? @map("image_key")
 
   isActive  Boolean @default(true) @map("is_active")
   sortOrder Int     @default(0) @map("sort_order")
@@ -79,21 +86,96 @@ model Category {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  subCategories SubCategory[]
-  products      Product[]
+  subCategories  SubCategory[]
+  products       Product[]
+  garments       Garment[]
+  designCategory Category?     @relation("CategoryDesignLibrary", fields: [designCategoryId], references: [id], onDelete: SetNull)
+  designUsers    Category[]    @relation("CategoryDesignLibrary")
 
+  @@index([designCategoryId])
   @@map("categories")
+}
+
+// A blank garment model customers design on, e.g. "Classic Hoodie" in "Hoodies".
+model Garment {
+  id         String @id @default(uuid())
+  categoryId String @map("category_id")
+
+  name        String
+  description String?
+
+  // Price of the blank garment in cents; a variant may override it.
+  basePrice Int @map("base_price")
+
+  // Product photo shown to customers, and front/back mockups used as the studio canvas.
+  imageKey      String? @map("image_key")
+  frontImageKey String? @map("front_image_key")
+  backImageKey  String? @map("back_image_key")
+
+  // Printable areas as fractions of the mockup, with the real print size for production:
+  // { "x": 0.3, "y": 0.28, "width": 0.4, "height": 0.42, "widthCm": 30, "heightCm": 40 }
+  frontPrintArea Json? @map("front_print_area")
+  backPrintArea  Json? @map("back_print_area")
+
+  // App-drawn fallback until mockups are uploaded, e.g. HOODIE or TSHIRT.
+  silhouette String?
+
+  isActive  Boolean @default(true) @map("is_active")
+  sortOrder Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  category Category         @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  variants GarmentVariant[]
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("garments")
+}
+
+// One sellable size × colour of a garment, with its own stock.
+model GarmentVariant {
+  id        String @id @default(uuid())
+  garmentId String @map("garment_id")
+
+  size       String
+  colorName  String  @map("color_name")
+  colorValue String  @map("color_value")
+  sku        String? @unique
+
+  stock Int  @default(0)
+  // Optional price override in cents, e.g. XL costs more; null uses Garment.basePrice.
+  price Int?
+
+  isActive  Boolean @default(true) @map("is_active")
+  sortOrder Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  garment  Garment   @relation(fields: [garmentId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([garmentId, size, colorValue])
+  @@index([garmentId])
+  @@map("garment_variants")
 }
 
 model SubCategory {
   id         String @id @default(uuid())
   categoryId String @map("category_id")
 
-  name        String
-  description String?
-  imageKey    String? @map("image_key")
+  name             String
+  description      String?
+  imageKey         String? @map("image_key")
+  // Untouched upload kept for production (printing), when imageKey was processed.
+  originalImageKey String? @map("original_image_key")
 
   color String?
+  // Free text; apparel designs use ICON, LOGO, LETTERING or ILLUSTRATION.
   type  String?
 
   // Price stored in cents.
@@ -102,7 +184,9 @@ model SubCategory {
   // 1500 = €15.00
   price Int @default(0)
 
-  stock Int @default(0)
+  stock      Int     @default(0)
+  // Printed designs are unlimited; physical items (beads, patches) track stock.
+  trackStock Boolean @default(true) @map("track_stock")
 
   isActive  Boolean @default(true) @map("is_active")
   sortOrder Int     @default(0) @map("sort_order")
@@ -120,10 +204,16 @@ model SubCategory {
 }
 
 model Product {
-  selectedSize Json?       @map("selected_size")
-  id           String      @id @default(uuid())
-  productType  ProductType @default(CUSTOM_DESIGN) @map("product_type")
-  stock        Int         @default(0)
+  selectedSize    Json?       @map("selected_size")
+  selectedOptions Json?       @map("selected_options")
+  // Personalised text on GIFT canvases: [{ id, text, x, y, scale, rotation, color?, font? }].
+  textLayers      Json?       @map("text_layers")
+  id              String      @id @default(uuid())
+  productType     ProductType @default(CUSTOM_DESIGN) @map("product_type")
+  stock           Int         @default(0)
+
+  // The garment size × colour an APPAREL design is printed on.
+  garmentVariantId String? @map("garment_variant_id")
 
   // User who created the product.
   // Can be ADMIN or CUSTOMER.
@@ -133,10 +223,16 @@ model Product {
   // Example: Bracelet, Necklace, Keychain.
   categoryId String @map("category_id")
 
-  name             String
-  description      String?
-  imageKey         String? @map("image_key")
-  designPreviewKey String? @map("design_preview_key")
+  name                 String
+  description          String?
+  imageKey             String? @map("image_key")
+  designPreviewKey     String? @map("design_preview_key")
+  // Second preview for two-sided designs (APPAREL back).
+  backDesignPreviewKey String? @map("back_design_preview_key")
+
+  // Snapshot of the builder base price (e.g. the blank garment) in cents, added to
+  // the component total. 0 for jewelry and ready-made products.
+  basePrice Int @default(0) @map("base_price")
 
   // Total number of beads/components used.
   // Calculated from ProductItems.
@@ -157,8 +253,9 @@ model Product {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  createdBy User     @relation(fields: [createdById], references: [id])
-  category  Category @relation(fields: [categoryId], references: [id])
+  createdBy      User            @relation(fields: [createdById], references: [id])
+  category       Category        @relation(fields: [categoryId], references: [id])
+  garmentVariant GarmentVariant? @relation(fields: [garmentVariantId], references: [id], onDelete: Restrict)
 
   // A product can contain many different beads/components.
   items ProductItem[]
@@ -167,6 +264,7 @@ model Product {
 
   @@index([createdById])
   @@index([categoryId])
+  @@index([garmentVariantId])
   @@index([isActive])
   @@map("products")
 }
@@ -196,6 +294,17 @@ model ProductItem {
   // Example:
   // 150 = €1.50
   unitPrice Int @map("unit_price")
+
+  // Free placement for canvas builders such as APPAREL; null for jewelry strands.
+  // x/y are the design centre, normalised 0–1 within the side's print area.
+  // Customer-uploaded image for a CUSTOM_UPLOAD design ("Your own design").
+  customImageKey String? @map("custom_image_key")
+
+  side     String?
+  x        Float?
+  y        Float?
+  scale    Float?
+  rotation Float?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

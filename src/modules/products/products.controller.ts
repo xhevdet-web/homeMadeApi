@@ -34,9 +34,7 @@ export class ProductsController {
   }
   @Get('creations/from-others')
   @UseGuards(JwtAuthGuard)
-  findCompletedCreationsFromOthers(
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
+  findCompletedCreationsFromOthers(@CurrentUser() user: AuthenticatedUser) {
     return this.service.findCompletedCreationsFromOthers(user);
   }
   @Get(':id')
@@ -53,6 +51,8 @@ export class ProductsController {
     files?: {
       file?: Express.Multer.File[];
       designPreview?: Express.Multer.File[];
+      backDesignPreview?: Express.Multer.File[];
+      customDesigns?: Express.Multer.File[];
     },
   ) {
     return this.service.create(
@@ -60,6 +60,8 @@ export class ProductsController {
       user,
       files?.file?.[0],
       files?.designPreview?.[0],
+      files?.backDesignPreview?.[0],
+      files?.customDesigns ?? [],
     );
   }
   @ImageUpload('product', true)
@@ -73,6 +75,7 @@ export class ProductsController {
     files?: {
       file?: Express.Multer.File[];
       designPreview?: Express.Multer.File[];
+      backDesignPreview?: Express.Multer.File[];
     },
   ) {
     return this.service.update(
@@ -81,6 +84,7 @@ export class ProductsController {
       user,
       files?.file?.[0],
       files?.designPreview?.[0],
+      files?.backDesignPreview?.[0],
     );
   }
   @Delete(':id')

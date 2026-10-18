@@ -35,6 +35,10 @@ const delegate = () => ({
   delete: vi.fn(),
 });
 
+// Design (sub-category) uploads also keep the untouched original for production.
+const originalUploads = (route: string) =>
+  route === 'sub-categories' ? ['upload'] : [];
+
 describe('Entity images HTTP', () => {
   let app: INestApplication<App>;
   let token: string;
@@ -45,6 +49,15 @@ describe('Entity images HTTP', () => {
   const product = delegate();
   const send = vi.spyOn(S3Client.prototype, 'send');
   const events: string[] = [];
+  const commands = () => send.mock.calls.map(([command]) => command as unknown);
+  const putKeys = () =>
+    commands()
+      .filter((command) => command instanceof PutObjectCommand)
+      .map((command) => (command as PutObjectCommand).input.Key);
+  const deleteKeys = () =>
+    commands()
+      .filter((command) => command instanceof DeleteObjectCommand)
+      .map((command) => (command as DeleteObjectCommand).input.Key);
   const segment = vi.spyOn(ForegroundSegmentationService.prototype, 'mask');
   const config = new ConfigService({
     NODE_ENV: 'test',
@@ -54,7 +67,14 @@ describe('Entity images HTTP', () => {
     R2_BUCKET_NAME: 'test',
   });
   const originalGet = config.get.bind(config);
-  const tx = { category, subCategory, product, $queryRaw: vi.fn() };
+  const garmentVariant = { findUnique: vi.fn() };
+  const tx = {
+    category,
+    subCategory,
+    product,
+    garmentVariant,
+    $queryRaw: vi.fn(),
+  };
   beforeAll(async () => {
     vi.stubEnv(
       'JWT_ACCESS_SECRET',
@@ -115,7 +135,7 @@ describe('Entity images HTTP', () => {
       );
       model.delete.mockImplementation(async () => {
         events.push('remove');
-        return { id, imageKey: oldKey, subCategories: [] };
+        return { id, imageKey: oldKey, subCategories: [], items: [] };
       });
       model.findUnique.mockResolvedValue({
         id,
@@ -134,7 +154,7 @@ describe('Entity images HTTP', () => {
     vi.unstubAllEnvs();
   });
 
-  it.each(['sub-categories', 'products'])(
+  it.each(['categories', 'sub-categories', 'products'])(
     'processes JPEG/PNG/WebP for %s creation and replacement before R2 upload',
     async (route) => {
       publicUrl = 'https://images.example.test';
@@ -154,7 +174,8 @@ describe('Entity images HTTP', () => {
               : request(app.getHttpServer()).post(base)
           ).auth(token, { type: 'bearer' });
           if (!replace) {
-            req.field('name', 'White pearl').field('categoryId', id);
+            req.field('name', 'White pearl');
+            if (route !== 'categories') req.field('categoryId', id);
             if (route === 'products')
               req.field(
                 'items',
@@ -169,8 +190,14 @@ describe('Entity images HTTP', () => {
             .expect(replace ? 200 : 201);
           expect(events).toEqual(
             replace
-              ? ['process', 'upload', 'update', 'delete']
-              : ['process', 'upload', 'create'],
+              ? [
+                  'process',
+                  'upload',
+                  ...originalUploads(route),
+                  'update',
+                  'delete',
+                ]
+              : ['process', 'upload', ...originalUploads(route), 'create'],
           );
           const command = send.mock.calls[0][0] as PutObjectCommand;
           expect(command.input.ContentType).toBe('image/png');
@@ -184,22 +211,234 @@ describe('Entity images HTTP', () => {
           expect(response.body.imageUrl).toBe(
             publicUrl + '/' + response.body.imageKey,
           );
-          if (replace)
-            expect(
-              (send.mock.calls[1][0] as DeleteObjectCommand).input.Key,
-            ).toBe(oldKey);
+          if (replace) expect(deleteKeys()).toEqual([oldKey]);
         }
     },
   );
-  it('does not process category files or customer designPreview bytes', async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/categories')
+  it('keeps the untouched design upload as the production original', async () => {
+    const source = await sharp({
+      create: { width: 32, height: 32, channels: 3, background: 'white' },
+    })
+      .jpeg()
+      .toBuffer();
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/sub-categories')
       .auth(token, { type: 'bearer' })
-      .field('name', 'Category')
-      .attach('file', png, 'category.png')
+      .field('name', 'Logo')
+      .field('categoryId', id)
+      .attach('file', source, 'logo.jpg')
       .expect(201);
-    expect((send.mock.calls[0][0] as PutObjectCommand).input.Body).toEqual(png);
-    send.mockClear();
+    const [display, original] = commands() as PutObjectCommand[];
+    expect(display.input.Key).toMatch(/^subcategories\//);
+    expect(original.input.Key).toMatch(/^originals\//);
+    expect(original.input.Body).toEqual(source);
+    expect(subCategory.create.mock.calls[0][0].data.originalImageKey).toBe(
+      original.input.Key,
+    );
+    expect(response.body.originalImageUrl).toBeNull();
+  });
+  it('skips background removal for designs uploaded with removeBackground=false', async () => {
+    const source = await sharp({
+      create: { width: 32, height: 32, channels: 3, background: 'white' },
+    })
+      .jpeg()
+      .toBuffer();
+    await request(app.getHttpServer())
+      .post('/api/v1/sub-categories')
+      .auth(token, { type: 'bearer' })
+      .field('name', 'Lettering')
+      .field('categoryId', id)
+      .field('removeBackground', 'false')
+      .field('trackStock', 'false')
+      .attach('file', source, 'lettering.jpg')
+      .expect(201);
+    expect(events).toEqual(['upload', 'create']);
+    expect((send.mock.calls[0][0] as PutObjectCommand).input.Body).toEqual(
+      source,
+    );
+    expect(subCategory.create.mock.calls[0][0].data).toMatchObject({
+      trackStock: false,
+      originalImageKey: undefined,
+    });
+  });
+  describe('customer artwork for "Your own design"', () => {
+    const ownId = 'c1d1f0a4-2a71-46c6-bfba-a453d847044f';
+    const variantId = 'c7d1f0a4-2a71-46c6-bfba-a453d847044f';
+    const placed = { side: 'FRONT', x: 0.5, y: 0.5 };
+    beforeEach(() => {
+      category.findUnique.mockResolvedValue({
+        id,
+        builderType: 'APPAREL',
+        options: [],
+        designCategoryId: null,
+      });
+      garmentVariant.findUnique.mockResolvedValue({
+        id: variantId,
+        size: 'M',
+        colorName: 'Black',
+        stock: 4,
+        price: null,
+        isActive: true,
+        garment: {
+          categoryId: id,
+          isActive: true,
+          basePrice: 2500,
+          name: 'Classic Hoodie',
+        },
+      });
+      subCategory.findMany.mockResolvedValue([
+        {
+          id: ownId,
+          categoryId: id,
+          name: 'Your own design',
+          isActive: true,
+          price: 500,
+          type: 'CUSTOM_UPLOAD',
+        },
+        {
+          id: childId,
+          categoryId: id,
+          name: 'Logo',
+          isActive: true,
+          price: 200,
+          type: 'LOGO',
+        },
+      ]);
+    });
+    const post = (items: object[], uploads: number) => {
+      const req = request(app.getHttpServer())
+        .post('/api/v1/products')
+        .auth(token, { type: 'bearer' })
+        .field('name', 'My hoodie')
+        .field('categoryId', id)
+        .field('garmentVariantId', variantId)
+        .field('items', JSON.stringify(items));
+      for (let index = 0; index < uploads; index++)
+        req.attach('customDesigns', png, `artwork-${index}.png`);
+      return req;
+    };
+
+    it('stores each upload untouched and charges the own-design price once', async () => {
+      await post(
+        [
+          {
+            subCategoryId: ownId,
+            quantity: 1,
+            customDesignIndex: 0,
+            ...placed,
+          },
+          {
+            subCategoryId: ownId,
+            quantity: 1,
+            customDesignIndex: 1,
+            ...placed,
+            side: 'BACK',
+          },
+          { subCategoryId: childId, quantity: 1, ...placed },
+        ],
+        2,
+      ).expect(201);
+      const keys = putKeys();
+      expect(keys).toHaveLength(2);
+      for (const key of keys) expect(key).toMatch(/^custom-designs\//);
+      expect(segment).not.toHaveBeenCalled();
+      const data = product.create.mock.calls[0][0].data;
+      expect(
+        data.items.create.map(
+          (item: { customImageKey?: string }) => item.customImageKey,
+        ),
+      ).toEqual([keys[0], keys[1], undefined]);
+      expect(
+        data.items.create.map((item: { unitPrice: number }) => item.unitPrice),
+      ).toEqual([500, 0, 200]);
+      expect(data.price).toBe(2500 + 500 + 200);
+    });
+
+    it.each([
+      [
+        'an own design without an upload',
+        [{ subCategoryId: ownId, quantity: 1, ...placed }],
+        0,
+      ],
+      [
+        'an upload that is never placed',
+        [{ subCategoryId: childId, quantity: 1, ...placed }],
+        1,
+      ],
+      [
+        'one upload placed twice',
+        [
+          {
+            subCategoryId: ownId,
+            quantity: 1,
+            customDesignIndex: 0,
+            ...placed,
+          },
+          {
+            subCategoryId: ownId,
+            quantity: 1,
+            customDesignIndex: 0,
+            ...placed,
+          },
+        ],
+        1,
+      ],
+      [
+        'an upload on a catalog design',
+        [
+          {
+            subCategoryId: childId,
+            quantity: 1,
+            customDesignIndex: 0,
+            ...placed,
+          },
+        ],
+        1,
+      ],
+      [
+        'a client-supplied storage key',
+        [
+          {
+            subCategoryId: ownId,
+            quantity: 1,
+            customImageKey: 'custom-designs/someone-else.png',
+            ...placed,
+          },
+        ],
+        0,
+      ],
+    ])(
+      'rejects %s and leaves no orphaned files',
+      async (_case, items, uploads) => {
+        await post(items, uploads).expect(400);
+        expect(product.create).not.toHaveBeenCalled();
+        expect(deleteKeys()).toEqual(putKeys());
+      },
+    );
+
+    it('rejects uploads on non-apparel designs', async () => {
+      category.findUnique.mockResolvedValue({
+        id,
+        builderType: 'JEWELRY',
+        options: [],
+        designCategoryId: null,
+      });
+      await request(app.getHttpServer())
+        .post('/api/v1/products')
+        .auth(token, { type: 'bearer' })
+        .field('name', 'Bracelet')
+        .field('categoryId', id)
+        .field(
+          'items',
+          JSON.stringify([{ subCategoryId: childId, quantity: 1 }]),
+        )
+        .attach('customDesigns', png, 'artwork.png')
+        .expect(400);
+      expect(deleteKeys()).toEqual(putKeys());
+    });
+  });
+
+  it('does not process customer designPreview bytes', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/products')
       .auth(token, { type: 'bearer' })
@@ -227,13 +466,17 @@ describe('Entity images HTTP', () => {
         .auth(token, { type: 'bearer' })
         .attach('file', source, 'original.jpg')
         .expect(500);
-      expect(events).toEqual(['process', 'upload', 'delete']);
+      expect(events).toEqual([
+        'process',
+        'upload',
+        ...originalUploads(route),
+        'delete',
+        ...originalUploads(route).map(() => 'delete'),
+      ]);
       const uploaded = (send.mock.calls[0][0] as PutObjectCommand).input;
       expect(uploaded.ContentType).toBe('image/png');
       expect(uploaded.Body).not.toEqual(source);
-      expect((send.mock.calls[1][0] as DeleteObjectCommand).input.Key).toBe(
-        uploaded.Key,
-      );
+      expect(deleteKeys()).toEqual(putKeys());
       expect(uploaded.Key).not.toBe(oldKey);
     },
   );
@@ -296,6 +539,10 @@ describe('Entity images HTTP', () => {
       'UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA',
     ],
   ])('accepts valid %s bytes', async (extension, contentType, base64) => {
+    // The 1×1 fixtures are too small for the default mask's 8px inset.
+    segment.mockImplementation(async (_rgb, width, height) =>
+      Buffer.alloc(width * height, 255),
+    );
     const response = await request(app.getHttpServer())
       .post('/api/v1/categories')
       .auth(token, { type: 'bearer' })
@@ -305,7 +552,8 @@ describe('Entity images HTTP', () => {
         contentType,
       })
       .expect(201);
-    expect(response.body.imageKey.endsWith('.' + extension)).toBe(true);
+    // Category images are background-processed, so opaque sources are stored as PNG.
+    expect(response.body.imageKey.endsWith('.png')).toBe(true);
   });
 
   it.each(['categories', 'sub-categories', 'products'])(
@@ -336,7 +584,7 @@ describe('Entity images HTTP', () => {
       );
       expect(response.body.imageUrl).toBeNull();
       expect(response.body.isActive).toBe(false);
-      expect(events).toEqual(['upload', 'create']);
+      expect(events).toEqual(['upload', ...originalUploads(route), 'create']);
       if (route === 'sub-categories')
         expect(response.body).toMatchObject({
           price: 200,
@@ -380,10 +628,13 @@ describe('Entity images HTTP', () => {
         .auth(token, { type: 'bearer' })
         .attach('file', png, 'new.png')
         .expect(200);
-      expect(events).toEqual(['upload', 'update', 'delete']);
-      expect((send.mock.calls[1][0] as DeleteObjectCommand).input.Key).toBe(
-        oldKey,
-      );
+      expect(events).toEqual([
+        'upload',
+        ...originalUploads(route),
+        'update',
+        'delete',
+      ]);
+      expect(deleteKeys()).toEqual([oldKey]);
       expect(response.body.imageUrl).toBe(
         'https://images.example.test/' + response.body.imageKey,
       );
@@ -412,9 +663,7 @@ describe('Entity images HTTP', () => {
         .attach('file', png, 'new.png')
         .expect(500);
       const uploaded = (send.mock.calls[0][0] as PutObjectCommand).input.Key;
-      expect((send.mock.calls[1][0] as DeleteObjectCommand).input.Key).toBe(
-        uploaded,
-      );
+      expect(deleteKeys()).toEqual(putKeys());
       expect(uploaded).not.toBe(oldKey);
       expect(response.text).not.toContain('private database');
     },
@@ -441,9 +690,7 @@ describe('Entity images HTTP', () => {
           JSON.stringify([{ subCategoryId: childId, quantity: 8 }]),
         );
       await req.attach('file', png, 'new.png').expect(500);
-      expect((send.mock.calls[1][0] as DeleteObjectCommand).input.Key).toBe(
-        (send.mock.calls[0][0] as PutObjectCommand).input.Key,
-      );
+      expect(deleteKeys()).toEqual(putKeys());
     },
   );
 
@@ -760,18 +1007,27 @@ describe('Entity images HTTP', () => {
       return {
         imageKey: 'products/old.png',
         designPreviewKey: 'designs/old.png',
+        items: [
+          { customImageKey: 'custom-designs/old.png' },
+          { customImageKey: null },
+        ],
       };
     });
     await request(app.getHttpServer())
       .delete('/api/v1/products/' + id)
       .auth(token, { type: 'bearer' })
       .expect(204);
-    expect(events).toEqual(['remove', 'delete', 'delete']);
+    // Customer artwork is removed with the design.
+    expect(events).toEqual(['remove', 'delete', 'delete', 'delete']);
     expect(
       send.mock.calls.map(
         ([command]) => (command as DeleteObjectCommand).input.Key,
       ),
-    ).toEqual(['products/old.png', 'designs/old.png']);
+    ).toEqual([
+      'products/old.png',
+      'designs/old.png',
+      'custom-designs/old.png',
+    ]);
   });
 
   it.each([

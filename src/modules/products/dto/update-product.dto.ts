@@ -13,11 +13,17 @@ import {
   Length,
   ValidateIf,
   ValidateNested,
+  IsObject,
 } from 'class-validator';
 import { ProductType } from '../../../generated/prisma/client.js';
 import { ProductItemDto } from './product-item.dto.js';
+import { MAX_TEXT_LAYERS, TextLayerDto } from './text-layer.dto.js';
 
 export class UpdateProductDto {
+  @IsOptional()
+  @IsObject()
+  selectedOptions?: Record<string, unknown> | null;
+
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsString()
   @Length(1, 200)
@@ -42,6 +48,16 @@ export class UpdateProductDto {
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsUUID()
   categoryId?: string;
+
+  /** Personalised text for GIFT designs; null clears it on update. */
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
+  @IsArray()
+  @ArrayMaxSize(MAX_TEXT_LAYERS)
+  @ValidateNested({ each: true })
+  @Type(() => TextLayerDto)
+  textLayers?: TextLayerDto[] | null;
 
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsArray()

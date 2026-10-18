@@ -50,6 +50,16 @@ export class CreateSubCategoryDto {
   @IsBoolean()
   isActive?: boolean;
 
+  /** false for unlimited printed designs; physical items (beads, patches) keep stock. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsBoolean()
+  trackStock?: boolean;
+
+  /** Upload option. false keeps fine logos and lettering exactly as uploaded. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsBoolean()
+  removeBackground?: boolean;
+
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsInt()
   @Min(0)
