@@ -102,6 +102,35 @@ export class ProductsService {
     return this.list({});
   }
 
+  async findCompletedCreationsFromOthers(user: AuthenticatedUser) {
+    const orders = await this.query(() =>
+      this.prisma.order.findMany({
+        where: {
+          status: 'COMPLETED',
+          product: {
+            createdById: { not: user.id },
+            productType: 'CUSTOM_DESIGN',
+          },
+        },
+        select: {
+          id: true,
+          updatedAt: true,
+          product: { include: productInclude },
+        },
+        distinct: ['productId'],
+        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+        take: 5,
+      }),
+    );
+    return {
+      data: orders.map(({ id, updatedAt, product }) => ({
+        completedOrderId: id,
+        completedOrderUpdatedAt: updatedAt,
+        product,
+      })),
+    };
+  }
+
   async findOne(id: string) {
     const product = await this.query(() =>
       this.prisma.product.findUnique({

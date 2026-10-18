@@ -450,6 +450,22 @@ describe('Orders HTTP', () => {
     await get('?userId=' + otherId).expect(403);
   });
 
+  it('returns the five newest completed orders requested by the frontend', async () => {
+    const response = await get('?status=COMPLETED&page=1&limit=5').expect(200);
+    expect(response.body.meta).toEqual({
+      page: 1,
+      limit: 5,
+      total: 1,
+      totalPages: 1,
+    });
+    expect(order.findMany.mock.calls[0][0]).toMatchObject({
+      where: { userId, status: 'COMPLETED' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      skip: 0,
+      take: 5,
+    });
+  });
+
   it('queries customer details with ownership and excludes internal notes', async () => {
     await get('/' + id).expect(200);
     expect(order.findUnique.mock.calls[0][0]).toMatchObject({

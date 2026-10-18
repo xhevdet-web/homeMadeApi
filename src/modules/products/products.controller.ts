@@ -32,6 +32,13 @@ export class ProductsController {
   findAll() {
     return this.service.findAll();
   }
+  @Get('creations/from-others')
+  @UseGuards(JwtAuthGuard)
+  findCompletedCreationsFromOthers(
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.service.findCompletedCreationsFromOthers(user);
+  }
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.service.findOne(id);

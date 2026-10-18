@@ -57,6 +57,77 @@ Customers' results and counts are always restricted to their own orders. Filteri
 
 Responses include delivery snapshots, basic user information, and the product with category and items[].subCategory details, quantities, positions, and unitPrice snapshots. Password hashes are never selected. Internal adminNotes are selected only for admins. Related user/product display fields reflect their current values; delivery snapshots and totalPrice retain their creation-time values. Ordered product components and price snapshots cannot be edited through the Product API.
 
+### Five completed orders for the products view
+
+Call the existing list endpoint with fixed filters:
+
+`GET /api/v1/orders?status=COMPLETED&page=1&limit=5`
+
+Send the signed-in user's access token in `Authorization: Bearer <accessToken>`.
+The response uses the standard `{ data, meta }` list shape, and `data` contains at
+most five orders sorted newest first. Each order already includes its `product`,
+`product.category`, and `product.items`, so the frontend does not need a second
+product request.
+
+For a customer token, the backend returns only that customer's completed orders.
+For an admin token, it returns the five newest completed orders across all
+customers. This endpoint is not public because order responses contain customer
+and delivery information.
+
+Frontend behavior:
+
+1. Fetch the URL after a valid session has been restored.
+2. Render cards from `response.data`, using `order.id` as the list key and
+   `order.product` for product content.
+3. Use `order.product.designPreviewKey` or `order.product.imageKey` according to
+   the existing image-loading convention, and display `order.product.name`,
+   `order.totalPrice`, and `order.updatedAt` as needed.
+4. Show an empty state when `data.length === 0`.
+5. On `401`, return to login or refresh the session; do not show it as an empty
+   completed-orders result. Treat other failures as a retryable loading error.
+
+For the **Creations from others** section, do not use this customer order-history
+query. Use the privacy-safe products discovery endpoint documented below.
+
+### Creations from others
+
+`GET /api/v1/products/creations/from-others`
+
+This authenticated endpoint returns up to five distinct custom creations tied to
+the most recently updated completed orders. It excludes products created by the
+signed-in user, excludes ready-made catalog products, and never returns the
+order's customer or delivery fields.
+
+```json
+{
+  "data": [
+    {
+      "completedOrderId": "order-uuid",
+      "completedOrderUpdatedAt": "2026-10-18T12:00:00.000Z",
+      "product": {
+        "id": "product-uuid",
+        "name": "Bracelet",
+        "createdBy": {
+          "id": "creator-uuid",
+          "firstName": "Arta",
+          "lastName": "Berisha",
+          "userName": "arta"
+        }
+      }
+    }
+  ]
+}
+```
+
+The frontend should fetch it after session restoration, render
+`response.data[].product`, display the creator with
+`product.createdBy.firstName + " " + product.createdBy.lastName`, use
+`completedOrderId` as the card key, and show an empty state when `data` is empty.
+Product image keys receive the standard `imageUrl` and `designPreviewUrl` fields
+from the API image response interceptor. On `401`, restore the session or return
+to login; other failures should show a retry action. Creator email, phone, role,
+and other private account fields are not returned.
+
 ## Admin updates
 
 - `PATCH /orders/:id`: accepts only optional `adminNotes` and `finalImageUrl`. Both accept a string or null to clear. finalImageUrl can contain a future storage key; this endpoint does not upload files.

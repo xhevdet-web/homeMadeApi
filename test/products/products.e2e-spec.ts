@@ -33,6 +33,7 @@ describe('Products HTTP CRUD', () => {
   const category = delegate();
   const subCategory = delegate();
   const user = delegate();
+  const order = delegate();
   const creator = {
     id: userId,
     firstName: 'Test',
@@ -63,6 +64,7 @@ describe('Products HTTP CRUD', () => {
     category,
     subCategory,
     user,
+    order,
     $queryRaw: vi.fn(),
     $transaction: vi.fn(),
   };
@@ -103,6 +105,7 @@ describe('Products HTTP CRUD', () => {
     subCategory.findUnique.mockResolvedValue(record.subCategory);
     product.findUnique.mockResolvedValue(record);
     product.findMany.mockResolvedValue([record]);
+    order.findMany.mockResolvedValue([]);
     product.create.mockResolvedValue(record);
     product.update.mockResolvedValue(record);
     product.delete.mockResolvedValue({ id });
@@ -250,6 +253,51 @@ describe('Products HTTP CRUD', () => {
     expect(product.create).not.toHaveBeenCalled();
     expect(product.update).not.toHaveBeenCalled();
     expect(product.delete).not.toHaveBeenCalled();
+  });
+
+  it('returns five completed custom creations from other users without order customer data', async () => {
+    const completedAt = new Date('2026-10-18T12:00:00.000Z');
+    order.findMany.mockResolvedValue([
+      { id: otherId, updatedAt: completedAt, product: record },
+    ]);
+    const response = await request(app.getHttpServer())
+      .get(base + '/creations/from-others')
+      .set('Authorization', 'Bearer ' + token)
+      .expect(200);
+    expect(order.findMany.mock.calls[0][0]).toMatchObject({
+      where: {
+        status: 'COMPLETED',
+        product: {
+          createdById: { not: userId },
+          productType: 'CUSTOM_DESIGN',
+        },
+      },
+      distinct: ['productId'],
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+      take: 5,
+    });
+    expect(response.body.data[0]).toMatchObject({
+      completedOrderId: otherId,
+      completedOrderUpdatedAt: completedAt.toISOString(),
+      product: {
+        id,
+        createdBy: {
+          id: userId,
+          firstName: 'Test',
+          lastName: 'User',
+          userName: 'test',
+        },
+      },
+    });
+    expect(response.body.data[0]).not.toHaveProperty('user');
+    expect(response.body.data[0]).not.toHaveProperty('address');
+  });
+
+  it('requires authentication for creations from others', async () => {
+    await request(app.getHttpServer())
+      .get(base + '/creations/from-others')
+      .expect(401);
+    expect(order.findMany).not.toHaveBeenCalled();
   });
 
   it('rejects customer edits and deletes, including their own products', async () => {

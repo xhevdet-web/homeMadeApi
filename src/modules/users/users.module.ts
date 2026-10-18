@@ -4,11 +4,12 @@ import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../../database/database.module.js';
 import { UsersController } from './users.controller.js';
 import { ProfileController } from './profile.controller.js';
+import { RegistrationController } from './registration.controller.js';
 import { UsersService } from './users.service.js';
 
 @Module({
   imports: [DatabaseModule, AuthModule],
-  controllers: [ProfileController, UsersController],
+  controllers: [ProfileController, RegistrationController, UsersController],
   providers: [UsersService, AdminGuard],
   exports: [UsersService],
 })
