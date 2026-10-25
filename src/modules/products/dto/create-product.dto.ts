@@ -11,47 +11,104 @@ import {
   IsString,
   IsUUID,
   Length,
+  Matches,
   ValidateIf,
   ValidateNested,
-  IsObject,
 } from 'class-validator';
-import { ProductType } from '../../../generated/prisma/client.js';
+import { ProductOrigin } from '../../../generated/prisma/client.js';
 import { ProductItemDto } from './product-item.dto.js';
+import { MAX_PRODUCT_SIZES, ProductSizeDto } from './product-size.dto.js';
 import { MAX_TEXT_LAYERS, TextLayerDto } from './text-layer.dto.js';
 
+const trim = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.trim() : value;
+// Multipart cannot carry null, so clients send "" to clear nullable fields.
+export const emptyToNull = ({ value }: { value: unknown }) =>
+  value === '' ? null : value;
+
 export class CreateProductDto {
-  @IsOptional()
-  @IsObject()
-  selectedOptions?: Record<string, unknown> | null;
-
-  /** Garment size × colour for APPAREL designs; required there, rejected elsewhere. */
+  /** COMPANY is the admin catalog; CUSTOMER (default) is a Creative Studio design. */
   @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsEnum(ProductOrigin)
+  origin?: ProductOrigin;
+
   @IsUUID()
-  garmentVariantId?: string;
+  categoryId!: string;
 
-  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @Transform(trim)
   @IsString()
   @Length(1, 200)
-  selectedSizeId?: string;
+  name!: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string | null;
 
   @ValidateIf((_object, value: unknown) => value !== undefined)
-  @IsEnum(ProductType)
-  productType?: ProductType;
+  @IsBoolean()
+  isActive?: boolean;
 
+  // ---- COMPANY ----
+
+  /** Admin-set price in cents. CUSTOMER prices are calculated. */
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsInt()
   @Min(0)
   @Max(2147483647)
   price?: number;
 
+  /** Stock of an unsized product. Sized products keep stock per size instead. */
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsInt()
   @Min(0)
   @Max(2147483647)
   stock?: number;
 
+  /** Sizes with their own stock, e.g. [{ size: 'S', stock: 20 }]; null removes sizes. */
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
+  @IsArray()
+  @ArrayMaxSize(MAX_PRODUCT_SIZES)
+  @ValidateNested({ each: true })
+  @Type(() => ProductSizeDto)
+  sizes?: ProductSizeDto[] | null;
+
+  /** Apparel colour name; one Product is one colour. */
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() || null : value,
+  )
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
+  @IsString()
+  @Length(1, 60)
+  color?: string | null;
+
+  /** Swatch shown in the app, e.g. "#1F2937". */
+  @Transform(emptyToNull)
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
+  @Matches(/^#[0-9A-Fa-f]{6}$/, { message: 'colorHex must look like #1F2937' })
+  colorHex?: string | null;
+
+  /** { front?, back? } print areas; validated in the service by validatePrintAreas. */
+  @IsOptional()
+  printAreas?: Record<string, unknown> | null;
+
+  // ---- CUSTOMER ----
+
+  /** The COMPANY product a design is made on; required by APPAREL studios. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsUUID()
-  categoryId!: string;
+  baseProductId?: string;
+
+  /** A size of the base product, or of the category's studio size presets. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsString()
+  @Length(1, 200)
+  selectedSizeId?: string;
 
   /** Personalised text for GIFT designs; null clears it on update. */
   @ValidateIf(
@@ -69,19 +126,4 @@ export class CreateProductDto {
   @ValidateNested({ each: true })
   @Type(() => ProductItemDto)
   items?: ProductItemDto[];
-
-  @Transform(({ value }: { value: unknown }) =>
-    typeof value === 'string' ? value.trim() : value,
-  )
-  @IsString()
-  @Length(1, 200)
-  name!: string;
-
-  @IsOptional()
-  @IsString()
-  description?: string | null;
-
-  @ValidateIf((_object, value: unknown) => value !== undefined)
-  @IsBoolean()
-  isActive?: boolean;
 }

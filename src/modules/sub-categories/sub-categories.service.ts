@@ -61,9 +61,11 @@ export class SubCategoriesService {
     }));
   }
 
-  findAll() {
+  /** All components, or one category's own components with ?categoryId=. */
+  findAll(categoryId?: string) {
     return this.query(() =>
       this.prisma.subCategory.findMany({
+        where: { categoryId },
         orderBy,
         include: { category: true },
       }),

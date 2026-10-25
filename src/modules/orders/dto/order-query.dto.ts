@@ -13,6 +13,7 @@ import {
   OrderStatus,
   PaymentStatus,
   PaymentType,
+  ProductOrigin,
 } from '../../../generated/prisma/client.js';
 
 export class OrderQueryDto {
@@ -31,6 +32,20 @@ export class OrderQueryDto {
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsUUID()
   userId?: string;
+
+  /** Orders of products in this category. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsUUID()
+  categoryId?: string;
+
+  /** Orders of this product, including customer designs made on it. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsUUID()
+  productId?: string;
+
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsEnum(ProductOrigin)
+  origin?: ProductOrigin;
 
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @Transform(({ value }: { value: unknown }) =>

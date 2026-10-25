@@ -67,12 +67,10 @@ describe('Entity images HTTP', () => {
     R2_BUCKET_NAME: 'test',
   });
   const originalGet = config.get.bind(config);
-  const garmentVariant = { findUnique: vi.fn() };
   const tx = {
     category,
     subCategory,
     product,
-    garmentVariant,
     $queryRaw: vi.fn(),
   };
   beforeAll(async () => {
@@ -145,6 +143,8 @@ describe('Entity images HTTP', () => {
         _count: { orders: 0 },
       });
     }
+    // No other product shares an image unless a test says so.
+    product.findMany.mockResolvedValue([]);
     subCategory.findMany.mockResolvedValue([
       { id: childId, categoryId: id, name: 'Bead', isActive: true, price: 200 },
     ]);
@@ -263,7 +263,7 @@ describe('Entity images HTTP', () => {
   });
   describe('customer artwork for "Your own design"', () => {
     const ownId = 'c1d1f0a4-2a71-46c6-bfba-a453d847044f';
-    const variantId = 'c7d1f0a4-2a71-46c6-bfba-a453d847044f';
+    const baseId = 'c7d1f0a4-2a71-46c6-bfba-a453d847044f';
     const placed = { side: 'FRONT', x: 0.5, y: 0.5 };
     beforeEach(() => {
       category.findUnique.mockResolvedValue({
@@ -272,19 +272,16 @@ describe('Entity images HTTP', () => {
         options: [],
         designCategoryId: null,
       });
-      garmentVariant.findUnique.mockResolvedValue({
-        id: variantId,
-        size: 'M',
-        colorName: 'Black',
-        stock: 4,
-        price: null,
+      // The COMPANY hoodie the design is printed on.
+      product.findUnique.mockResolvedValue({
+        id: baseId,
+        name: 'Black Essential Hoodie',
+        origin: 'COMPANY',
+        categoryId: id,
         isActive: true,
-        garment: {
-          categoryId: id,
-          isActive: true,
-          basePrice: 2500,
-          name: 'Classic Hoodie',
-        },
+        price: 2500,
+        stock: 0,
+        sizes: [{ size: 'M', stock: 4 }],
       });
       subCategory.findMany.mockResolvedValue([
         {
@@ -311,7 +308,8 @@ describe('Entity images HTTP', () => {
         .auth(token, { type: 'bearer' })
         .field('name', 'My hoodie')
         .field('categoryId', id)
-        .field('garmentVariantId', variantId)
+        .field('baseProductId', baseId)
+        .field('selectedSizeId', 'M')
         .field('items', JSON.stringify(items));
       for (let index = 0; index < uploads; index++)
         req.attach('customDesigns', png, `artwork-${index}.png`);
@@ -352,6 +350,37 @@ describe('Entity images HTTP', () => {
         data.items.create.map((item: { unitPrice: number }) => item.unitPrice),
       ).toEqual([500, 0, 200]);
       expect(data.price).toBe(2500 + 500 + 200);
+    });
+
+    it('accepts PNG artwork only', async () => {
+      const jpeg = await sharp({
+        create: { width: 8, height: 8, channels: 3, background: 'white' },
+      })
+        .jpeg()
+        .toBuffer();
+      const response = await request(app.getHttpServer())
+        .post('/api/v1/products')
+        .auth(token, { type: 'bearer' })
+        .field('name', 'My hoodie')
+        .field('categoryId', id)
+        .field('baseProductId', baseId)
+        .field('selectedSizeId', 'M')
+        .field(
+          'items',
+          JSON.stringify([
+            {
+              subCategoryId: ownId,
+              quantity: 1,
+              customDesignIndex: 0,
+              ...placed,
+            },
+          ]),
+        )
+        .attach('customDesigns', jpeg, 'artwork.jpg')
+        .expect(400);
+      expect(response.body.message).toBe('Uploaded designs must be PNG images');
+      expect(putKeys()).toEqual([]);
+      expect(product.create).not.toHaveBeenCalled();
     });
 
     it.each([

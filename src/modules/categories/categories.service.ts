@@ -12,7 +12,6 @@ import { PrismaService } from '../../database/prisma.service.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import type { CreateCategoryDto } from './dto/create-category.dto.js';
 import type { UpdateCategoryDto } from './dto/update-category.dto.js';
-import { validateCategoryOptions } from './category-options.js';
 import { validateBuilderConfig } from './builder-config.js';
 
 const orderBy = [
@@ -36,10 +35,6 @@ export class CategoriesService {
           data: {
             builderType: dto.builderType,
             designCategoryId: dto.designCategoryId,
-            options:
-              dto.options === null
-                ? Prisma.DbNull
-                : validateCategoryOptions(dto.options),
             builderConfig:
               dto.builderConfig === null
                 ? Prisma.DbNull
@@ -170,10 +165,6 @@ export class CategoriesService {
           data: {
             builderType: dto.builderType,
             designCategoryId: dto.designCategoryId,
-            options:
-              dto.options === null
-                ? Prisma.DbNull
-                : validateCategoryOptions(dto.options),
             builderConfig:
               dto.builderConfig === null
                 ? Prisma.DbNull

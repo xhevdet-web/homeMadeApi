@@ -83,69 +83,35 @@ describe('Categories and SubCategories HTTP CRUD', () => {
     unit: 'cm',
     maxItems: 18,
   };
-  const apparelOptions = [
-    {
-      key: 'size',
-      name: 'Size',
-      type: 'select',
-      required: true,
-      values: ['S', 'M', 'L'],
-    },
-    {
-      key: 'color',
-      name: 'Color',
-      type: 'color',
-      required: true,
-      values: [{ name: 'Black', value: '#000000' }],
-    },
-  ];
-  it('saves builderType and validated dynamic options from JSON and FormData', async () => {
+  it('saves builderType and the studio silhouette from JSON and FormData', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/categories')
-      .send({ name: 'Hoodie', builderType: 'APPAREL', options: apparelOptions })
+      .send({
+        name: 'Hoodie',
+        builderType: 'APPAREL',
+        builderConfig: { silhouette: 'HOODIE' },
+      })
       .expect(201);
     expect(category.create.mock.calls[0][0].data).toMatchObject({
       builderType: 'APPAREL',
-      options: apparelOptions,
+      builderConfig: { silhouette: 'HOODIE' },
     });
     await request(app.getHttpServer())
       .patch('/api/v1/categories/' + id)
       .field('builderType', 'APPAREL')
-      .field('options', JSON.stringify(apparelOptions))
+      .field('builderConfig', JSON.stringify({ silhouette: 'TSHIRT' }))
       .expect(200);
-    expect(category.update.mock.calls[0][0].data.options).toEqual(
-      apparelOptions,
-    );
+    expect(category.update.mock.calls[0][0].data.builderConfig).toEqual({
+      silhouette: 'TSHIRT',
+    });
   });
   it.each([
     { builderType: 'CLOTHING' },
-    { options: {} },
-    { options: [{ ...apparelOptions[0], key: 'bad key' }] },
-    { options: [apparelOptions[0], apparelOptions[0]] },
-    { options: [{ ...apparelOptions[0], values: ['M', 'M'] }] },
-    {
-      options: [
-        {
-          key: 'count',
-          name: 'Count',
-          type: 'number',
-          required: false,
-          min: 10,
-          max: 2,
-        },
-      ],
-    },
-    {
-      options: [
-        {
-          key: 'text',
-          name: 'Text',
-          type: 'text',
-          required: false,
-          maxLength: 0,
-        },
-      ],
-    },
+    { builderConfig: [] },
+    { builderConfig: { silhouette: 'hoodie' } },
+    { builderConfig: { shape: 'HOODIE' } },
+    // Category options were retired: colour and size live on each product.
+    { options: [] },
   ])('rejects invalid builder configuration %j', async (invalid) => {
     await request(app.getHttpServer())
       .post('/api/v1/categories')
@@ -153,20 +119,15 @@ describe('Categories and SubCategories HTTP CRUD', () => {
       .expect(400);
     expect(category.create).not.toHaveBeenCalled();
   });
-  it('supports null and empty dynamic configuration', async () => {
+  it('supports clearing the builder configuration', async () => {
     await request(app.getHttpServer())
       .patch('/api/v1/categories/' + id)
-      .send({ builderType: null, options: null })
+      .send({ builderType: null, builderConfig: null })
       .expect(200);
     expect(category.update.mock.calls[0][0].data).toMatchObject({
       builderType: null,
-      options: Prisma.DbNull,
+      builderConfig: Prisma.DbNull,
     });
-    await request(app.getHttpServer())
-      .patch('/api/v1/categories/' + id)
-      .send({ options: [] })
-      .expect(200);
-    expect(category.update.mock.calls[1][0].data.options).toEqual([]);
   });
   const libraryId = 'e1d1f0a4-2a71-46c6-bfba-a453d847044f';
   it('gives every APPAREL category a "Your own design" upload design, once', async () => {

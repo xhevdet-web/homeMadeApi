@@ -16,6 +16,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
 import { SubCategoriesService } from './sub-categories.service.js';
 import { CreateSubCategoryDto } from './dto/create-sub-category.dto.js';
@@ -30,8 +31,11 @@ export class SubCategoriesController {
   ) {}
 
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(
+    @Query('categoryId', new ParseUUIDPipe({ optional: true }))
+    categoryId?: string,
+  ) {
+    return this.service.findAll(categoryId);
   }
 
   @Get(':id')

@@ -189,7 +189,9 @@ placed after this change. No existing order/product rows are deleted.
 
 ## Ready-made purchases
 
-Customers can order active `READY_MADE` products created by admins through the existing order creation endpoint. Each order buys one finished product. Placement atomically checks and deducts one unit of product stock, without deducting component stock. Out-of-stock, inactive, and non-admin-created ready-made products are rejected. The purchased admin price, product type, product details, components, and independent image copies are preserved in the immutable order snapshot. Later catalog edits do not change the purchased details or total price.
+Customers can order active `COMPANY` products created by admins through the existing order creation endpoint. Each order buys one finished product. An unsized product atomically deducts one unit of `stock`; a product sold in sizes requires `size` in the request body (e.g. `"size": "L"`) and deducts one unit of that size only. A `CUSTOMER` design made on a base product (e.g. a hoodie) deducts its components and one unit of the base product in the design's size. Every stock change happens only when the order is placed, in the same transaction, under the product's row lock. Out-of-stock, inactive, and non-admin-created company products are rejected. The purchased price, origin, size, base product (with its images and print areas), components, and independent image copies are preserved in the immutable order snapshot (`version: 2`); older `version: 1` snapshots are returned in the same shape. Later catalog edits do not change the purchased details or total price.
+
+`GET /api/v1/orders` also filters by `categoryId`, `productId` (a company product's orders include the customer designs made on it) and `origin` (`COMPANY` or `CUSTOMER`).
 
 Custom-design ordering retains its ownership rules, component price snapshots, and component stock deductions.
 

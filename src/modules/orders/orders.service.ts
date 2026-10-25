@@ -12,9 +12,14 @@ import {
 import { PrismaService } from '../../database/prisma.service.js';
 import { Prisma, OrderStatus } from '../../generated/prisma/client.js';
 import {
-  garmentVariantSelect,
+  baseProductSelect,
   productItemsSelect,
 } from '../products/product-items.select.js';
+import {
+  parseSizes,
+  selectedSizeId,
+  takeSizeStock,
+} from '../products/product-sizes.js';
 import { StorageService } from '../../storage/storage.service.js';
 import { ImageWriteService } from '../../storage/image-write.service.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.type.js';
@@ -77,9 +82,9 @@ function orderSelect(user: AuthenticatedUser) {
         itemCount: true,
         price: true,
         basePrice: true,
-        productType: true,
+        origin: true,
         stock: true,
-        selectedOptions: true,
+        selectedSize: true,
         category: {
           select: {
             id: true,
@@ -88,15 +93,56 @@ function orderSelect(user: AuthenticatedUser) {
 
             imageKey: true,
             builderType: true,
-            options: true,
             builderConfig: true,
           },
         },
-        garmentVariant: { select: garmentVariantSelect },
+        baseProduct: { select: baseProductSelect },
         items: productItemsSelect,
       },
     },
   } satisfies Prisma.OrderSelect;
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * The ordered product as frozen in its snapshot. Version 1 snapshots predate
+ * product-centred apparel: their product type and garment variant are presented as
+ * the current origin, base product and size so clients read one shape.
+ */
+function snapshotProduct(product: Record<string, unknown>) {
+  const { productType, garmentVariant, ...current } = product;
+  // Category options were retired; colour and size now live on the product.
+  delete current.selectedOptions;
+  const variant = isObject(garmentVariant) ? garmentVariant : null;
+  const garment = isObject(variant?.garment) ? variant.garment : null;
+  return {
+    ...current,
+    origin:
+      current.origin ?? (productType === 'READY_MADE' ? 'COMPANY' : 'CUSTOMER'),
+    selectedSize:
+      current.selectedSize ??
+      (typeof variant?.size === 'string'
+        ? { id: variant.size, name: variant.size }
+        : null),
+    baseProduct:
+      current.baseProduct ??
+      (variant && garment
+        ? {
+            id: garment.id,
+            name: garment.name,
+            color: variant.colorName,
+            colorHex: variant.colorValue,
+            imageKey: garment.frontImageKey ?? garment.imageKey ?? null,
+            backImageKey: garment.backImageKey ?? null,
+            printAreas: {
+              front: garment.frontPrintArea ?? undefined,
+              back: garment.backPrintArea ?? undefined,
+            },
+          }
+        : null),
+  };
 }
 
 @Injectable()
@@ -135,16 +181,21 @@ export class OrdersService {
                 id: true,
                 createdById: true,
                 createdBy: { select: { role: true } },
-                productType: true,
+                origin: true,
+                baseProductId: true,
                 selectedSize: true,
-                selectedOptions: true,
                 textLayers: true,
                 price: true,
                 stock: true,
+                sizes: true,
+                color: true,
+                colorHex: true,
                 isActive: true,
                 name: true,
                 description: true,
                 imageKey: true,
+                backImageKey: true,
+                printAreas: true,
                 designPreviewKey: true,
                 backDesignPreviewKey: true,
                 basePrice: true,
@@ -155,31 +206,7 @@ export class OrdersService {
                     description: true,
                     imageKey: true,
                     builderType: true,
-                    options: true,
                     builderConfig: true,
-                  },
-                },
-                garmentVariant: {
-                  select: {
-                    id: true,
-                    size: true,
-                    colorName: true,
-                    colorValue: true,
-                    sku: true,
-                    isActive: true,
-                    garment: {
-                      select: {
-                        id: true,
-                        name: true,
-                        isActive: true,
-                        imageKey: true,
-                        frontImageKey: true,
-                        backImageKey: true,
-                        frontPrintArea: true,
-                        backPrintArea: true,
-                        silhouette: true,
-                      },
-                    },
                   },
                 },
                 items: {
@@ -217,36 +244,55 @@ export class OrdersService {
               },
             });
             if (!product) throw new NotFoundException('Product not found');
-            const readyMade = product.productType === 'READY_MADE';
-            if (readyMade) {
+            const company = product.origin === 'COMPANY';
+            // The size bought: chosen at checkout for a COMPANY product, in the studio for a design.
+            let size: string | undefined;
+            if (company) {
               if (!product.isActive || product.createdBy.role !== 'ADMIN')
                 throw new BadRequestException(
-                  'Only active ready-made products created by admins can be ordered',
+                  'Only active company products created by admins can be ordered',
                 );
-              const reserved = await tx.product.updateMany({
-                where: {
-                  id: product.id,
-                  productType: 'READY_MADE',
-                  isActive: true,
-                  stock: { gte: 1 },
-                },
-                data: { stock: { decrement: 1 } },
-              });
-              if (reserved.count !== 1)
-                throw new BadRequestException(
-                  'Insufficient finished-product stock',
-                );
+              if (parseSizes(product.sizes).length) {
+                if (!dto.size)
+                  throw new BadRequestException(
+                    `Choose a size of ${product.name}`,
+                  );
+                size = dto.size;
+                await takeSizeStock(tx, product, size);
+              } else {
+                if (dto.size !== undefined)
+                  throw new BadRequestException(
+                    `${product.name} is not sold in sizes`,
+                  );
+                const reserved = await tx.product.updateMany({
+                  where: {
+                    id: product.id,
+                    origin: 'COMPANY',
+                    isActive: true,
+                    stock: { gte: 1 },
+                  },
+                  data: { stock: { decrement: 1 } },
+                });
+                if (reserved.count !== 1)
+                  throw new BadRequestException(
+                    'Insufficient finished-product stock',
+                  );
+              }
             }
             if (
-              !readyMade &&
+              !company &&
               user.role !== 'ADMIN' &&
               product.createdById !== user.id
             )
               throw new ForbiddenException(
                 'You can only order your own products',
               );
+            if (!company && dto.size !== undefined)
+              throw new BadRequestException(
+                'A design keeps the size chosen in the studio',
+              );
             if (
-              !readyMade &&
+              !company &&
               !product.items.length &&
               (!product.category.builderType ||
                 product.category.builderType === 'JEWELRY')
@@ -254,26 +300,35 @@ export class OrdersService {
               throw new BadRequestException(
                 'Product has no components; restore or recreate the design before ordering',
               );
-            const apparel = product.category.builderType === 'APPAREL';
-            const variant = product.garmentVariant;
-            if (apparel && !readyMade) {
-              if (!variant)
+            // A design made on a COMPANY product consumes one of it, e.g. the hoodie it is
+            // printed on. Same row lock as ordering that product directly.
+            const base =
+              !company && product.baseProductId
+                ? await this.lockBaseProduct(tx, product.baseProductId)
+                : null;
+            if (!company && product.category.builderType === 'APPAREL' && !base)
+              throw new BadRequestException(
+                'Choose the piece to design on before ordering this design',
+              );
+            if (base) {
+              if (!base.isActive)
                 throw new BadRequestException(
-                  'Choose a garment size and colour before ordering this design',
+                  `${base.name} is no longer available`,
                 );
-              if (!variant.isActive || !variant.garment.isActive)
-                throw new BadRequestException(
-                  `${variant.garment.name} in ${variant.colorName} / ${variant.size} is no longer available`,
-                );
+              if (parseSizes(base.sizes).length) {
+                size = selectedSizeId(product.selectedSize);
+                if (!size)
+                  throw new BadRequestException(
+                    `Choose a size of ${base.name} before ordering this design`,
+                  );
+              }
             }
             const quantities = new Map<string, number>();
-            // Custom designs start from the garment price snapshotted on the design.
-            let totalPrice = readyMade
-              ? product.price
-              : (product.basePrice ?? 0);
+            // Designs start from the base product price snapshotted on the design.
+            let totalPrice = company ? product.price : (product.basePrice ?? 0);
             if (!Number.isInteger(totalPrice) || totalPrice < 0)
               throw new BadRequestException('Product has an invalid price');
-            for (const item of readyMade ? [] : product.items) {
+            for (const item of company ? [] : product.items) {
               if (
                 !Number.isInteger(item.quantity) ||
                 item.quantity <= 0 ||
@@ -331,42 +386,36 @@ export class OrdersService {
             );
             const snapshot = {
               id: product.id,
-              productType: product.productType ?? 'CUSTOM_DESIGN',
-              selectedSize: product.selectedSize ?? null,
-              selectedOptions: product.selectedOptions ?? null,
+              origin: product.origin,
+              selectedSize:
+                company && size
+                  ? { id: size, name: size }
+                  : (product.selectedSize ?? null),
               // Personalised gift text, printed exactly as ordered.
               textLayers: product.textLayers ?? null,
               stock: product.stock ?? 0,
               name: product.name,
               description: product.description,
+              color: product.color,
+              colorHex: product.colorHex,
               imageKey: await copyImage(product.imageKey),
+              backImageKey: await copyImage(product.backImageKey),
+              printAreas: product.printAreas,
               designPreviewKey: previewKey,
               backDesignPreviewKey: backPreviewKey,
               basePrice: product.basePrice ?? 0,
               price: totalPrice,
-              // The exact garment bought, frozen for order history and production.
-              garmentVariant: variant
+              // The exact piece a design is made on, frozen for order history and
+              // production: its images and print areas reproduce placements in cm.
+              baseProduct: base
                 ? {
-                    id: variant.id,
-                    size: variant.size,
-                    colorName: variant.colorName,
-                    colorValue: variant.colorValue,
-                    sku: variant.sku,
-                    garment: {
-                      id: variant.garment.id,
-                      name: variant.garment.name,
-                      imageKey: await copyImage(variant.garment.imageKey),
-                      // Mockups and print areas let production reproduce placements in cm.
-                      frontImageKey: await copyImage(
-                        variant.garment.frontImageKey,
-                      ),
-                      backImageKey: await copyImage(
-                        variant.garment.backImageKey,
-                      ),
-                      frontPrintArea: variant.garment.frontPrintArea,
-                      backPrintArea: variant.garment.backPrintArea,
-                      silhouette: variant.garment.silhouette,
-                    },
+                    id: base.id,
+                    name: base.name,
+                    color: base.color,
+                    colorHex: base.colorHex,
+                    imageKey: await copyImage(base.imageKey),
+                    backImageKey: await copyImage(base.backImageKey),
+                    printAreas: base.printAreas,
                   }
                 : null,
               itemCount: product.items.reduce(
@@ -448,7 +497,7 @@ export class OrdersService {
                 totalPrice,
                 designPreviewKey: previewKey,
                 designSnapshot: {
-                  version: 1,
+                  version: 2,
                   product: snapshot,
                   ownedImageKeys: copiedKeys,
                 },
@@ -462,16 +511,15 @@ export class OrdersService {
               },
               select: orderSelect(user),
             });
-            if (apparel && variant && !readyMade) {
-              // Atomic: concurrent orders for the last Red / S cannot both succeed.
-              const reserved = await tx.garmentVariant.updateMany({
-                where: { id: variant.id, isActive: true, stock: { gte: 1 } },
+            // The base row lock above makes these safe against concurrent orders.
+            if (base && size) await takeSizeStock(tx, base, size);
+            else if (base) {
+              const reserved = await tx.product.updateMany({
+                where: { id: base.id, isActive: true, stock: { gte: 1 } },
                 data: { stock: { decrement: 1 } },
               });
               if (reserved.count !== 1)
-                throw new BadRequestException(
-                  `${variant.garment.name} in ${variant.colorName} / ${variant.size} just sold out`,
-                );
+                throw new BadRequestException(`${base.name} just sold out`);
             }
             // Stable lock order prevents two multi-component orders locking inventory in opposite order.
             for (const [subCategoryId, requestedQuantity] of [
@@ -529,6 +577,30 @@ export class OrdersService {
     );
   }
 
+  /** Row-locks a design's base product, exactly as ordering it directly does. */
+  private async lockBaseProduct(
+    tx: Prisma.TransactionClient,
+    baseProductId: string,
+  ) {
+    await tx.$queryRaw`SELECT id FROM products WHERE id = ${baseProductId} FOR UPDATE`;
+    const base = await tx.product.findUnique({
+      where: { id: baseProductId },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        sizes: true,
+        color: true,
+        colorHex: true,
+        imageKey: true,
+        backImageKey: true,
+        printAreas: true,
+      },
+    });
+    if (!base) throw new NotFoundException('Base product not found');
+    return base;
+  }
+
   private insufficientStock(
     component: { id: string; name: string; stock: number },
     requestedQuantity: number,
@@ -565,6 +637,19 @@ export class OrdersService {
       orderNumber: dto.orderNumber
         ? { contains: dto.orderNumber, mode: 'insensitive' }
         : undefined,
+      product:
+        dto.categoryId || dto.origin
+          ? { categoryId: dto.categoryId, origin: dto.origin }
+          : undefined,
+      // A COMPANY product's orders include the customer designs made on it.
+      ...(dto.productId
+        ? {
+            OR: [
+              { productId: dto.productId },
+              { product: { baseProductId: dto.productId } },
+            ],
+          }
+        : {}),
     };
     const [data, total] = await this.query(() =>
       Promise.all([
@@ -679,35 +764,16 @@ export class OrdersService {
   >(order: T): T {
     const snapshot = order.designSnapshot;
     if (
-      snapshot &&
-      typeof snapshot === 'object' &&
-      !Array.isArray(snapshot) &&
-      snapshot.version === 1 &&
-      snapshot.product &&
-      typeof snapshot.product === 'object' &&
-      !Array.isArray(snapshot.product)
+      isObject(snapshot) &&
+      (snapshot.version === 1 || snapshot.version === 2) &&
+      isObject(snapshot.product)
     )
-      return {
-        ...order,
-        product: {
-          ...snapshot.product,
-          selectedSize: snapshot.product.selectedSize ?? null,
-          selectedOptions: snapshot.product.selectedOptions ?? null,
-        },
-      } as T;
+      return { ...order, product: snapshotProduct(snapshot.product) } as T;
     // A current product size is not evidence of the size bought in a legacy order.
-    if (
-      order.product &&
-      typeof order.product === 'object' &&
-      !Array.isArray(order.product)
-    )
+    if (isObject(order.product))
       return {
         ...order,
-        product: {
-          ...order.product,
-          selectedSize: null,
-          selectedOptions: null,
-        },
+        product: { ...order.product, selectedSize: null },
       } as T;
     return order;
   }

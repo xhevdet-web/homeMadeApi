@@ -2,7 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client.js';
 
 /**
- * A garment side's printable area, as fractions (0–1) of its mockup image, with an
+ * An apparel side's printable area, as fractions (0–1) of its canvas image, with an
  * optional real print size in centimetres so placements can be converted to exact
  * production measurements:
  *
@@ -49,4 +49,23 @@ export function validatePrintArea(
     area[key] = cm;
   }
   return area;
+}
+
+/**
+ * A product's print areas, keyed by side: { "front": { ... }, "back": { ... } }.
+ * Returns undefined when nothing is configured.
+ */
+export function validatePrintAreas(
+  value: unknown,
+): Prisma.InputJsonObject | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!object(value))
+    throw new BadRequestException('printAreas must be an object or null');
+  for (const key of Object.keys(value))
+    if (!['front', 'back'].includes(key))
+      throw new BadRequestException(`Invalid printAreas: unknown side ${key}`);
+  const front = validatePrintArea(value.front, 'front');
+  const back = validatePrintArea(value.back, 'back');
+  if (!front && !back) return undefined;
+  return { ...(front ? { front } : {}), ...(back ? { back } : {}) };
 }

@@ -34,26 +34,17 @@ export const productItemsSelect = {
   },
 } satisfies Prisma.Product$itemsArgs;
 
-// The garment a design is printed on, shared by product and order responses.
-export const garmentVariantSelect = {
+// The COMPANY product a customer design is made on (e.g. the hoodie it is printed on),
+// shared by product and order responses.
+export const baseProductSelect = {
   id: true,
-  size: true,
-  colorName: true,
-  colorValue: true,
-  sku: true,
+  name: true,
   price: true,
+  color: true,
+  colorHex: true,
+  imageKey: true,
+  backImageKey: true,
+  printAreas: true,
+  sizes: true,
   isActive: true,
-  garment: {
-    select: {
-      id: true,
-      name: true,
-      basePrice: true,
-      imageKey: true,
-      frontImageKey: true,
-      backImageKey: true,
-      frontPrintArea: true,
-      backPrintArea: true,
-      silhouette: true,
-    },
-  },
-} satisfies Prisma.GarmentVariantSelect;
+} satisfies Prisma.ProductSelect;

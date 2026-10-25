@@ -7,6 +7,10 @@ import {
   Matches,
   ValidateIf,
 } from 'class-validator';
+import {
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+} from '../../auth/password.js';
 
 export class CreateUserDto {
   @Transform(({ value }: { value: unknown }) =>
@@ -31,7 +35,7 @@ export class CreateUserDto {
   email!: string;
 
   @IsString()
-  @Length(12, 128)
+  @Length(PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH)
   password!: string;
 
   @ValidateIf((_object, value: unknown) => value !== undefined)

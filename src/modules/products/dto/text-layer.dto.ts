@@ -1,5 +1,10 @@
 import { Transform } from 'class-transformer';
 import {
+  DESIGN_SIDES,
+  type DesignSide,
+} from '../../categories/builder-config.js';
+import {
+  IsBoolean,
   IsIn,
   IsNumber,
   IsString,
@@ -11,9 +16,13 @@ import {
 } from 'class-validator';
 
 export const TEXT_FONTS = ['SERIF', 'SANS', 'SCRIPT'] as const;
+export const TEXT_WEIGHTS = ['LIGHT', 'REGULAR', 'BOLD'] as const;
 export const MAX_TEXT_LAYERS = 6;
 
-/** Personalised text on a GIFT canvas, e.g. "Thank you" or "Kate & Mike". */
+/**
+ * Personalised text, e.g. "Thank you" on a gift, "Kate & Mike" on a bouquet card or a
+ * name printed on a hoodie. Never priced and never stocked.
+ */
 export class TextLayerDto {
   @IsString()
   @Length(1, 64)
@@ -26,7 +35,12 @@ export class TextLayerDto {
   @Length(1, 80)
   text!: string;
 
-  /** Text centre, normalised 0–1 within the canvas. */
+  /** APPAREL only: the garment side it is printed on. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsIn(DESIGN_SIDES)
+  side?: DesignSide;
+
+  /** Text centre, normalised 0–1 within the canvas (APPAREL: within the side's print area). */
   @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(0)
   @Max(1)
@@ -57,4 +71,12 @@ export class TextLayerDto {
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsIn(TEXT_FONTS)
   font?: (typeof TEXT_FONTS)[number];
+
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsIn(TEXT_WEIGHTS)
+  weight?: (typeof TEXT_WEIGHTS)[number];
+
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsBoolean()
+  italic?: boolean;
 }

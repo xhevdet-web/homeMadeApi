@@ -50,7 +50,7 @@ class MultipartFieldsInterceptor implements NestInterceptor {
     // Preserve strict JSON DTO validation. Only multipart transports numbers/booleans as text.
     if (request.is('multipart/form-data')) {
       const body = request.body as Record<string, unknown>;
-      for (const field of ['price', 'basePrice', 'stock', 'sortOrder']) {
+      for (const field of ['price', 'stock', 'sortOrder']) {
         const value = body[field];
         if (typeof value === 'string' && /^-?\d+$/.test(value))
           body[field] = Number(value);
@@ -62,12 +62,9 @@ class MultipartFieldsInterceptor implements NestInterceptor {
       for (const field of [
         'items',
         'sizes',
-        'options',
-        'selectedOptions',
         'textLayers',
         'builderConfig',
-        'frontPrintArea',
-        'backPrintArea',
+        'printAreas',
       ]) {
         if (typeof body[field] === 'string') {
           try {
@@ -83,7 +80,7 @@ class MultipartFieldsInterceptor implements NestInterceptor {
 }
 
 export function ImageUpload(
-  entity: 'category' | 'subCategory' | 'product' | 'garment',
+  entity: 'category' | 'subCategory' | 'product',
   update = false,
 ) {
   const properties: Record<string, object> = {
@@ -96,45 +93,6 @@ export function ImageUpload(
       description: 'Optional JPEG, PNG or WebP, maximum 5 MB.',
     },
   };
-  if (entity === 'garment') {
-    delete properties.file;
-    const printArea = {
-      description:
-        'Printable area as fractions of the mockup, with optional real print size: ' +
-        '{ x, y, width, height, widthCm?, heightCm? }. Multipart: JSON.stringify(area).',
-      nullable: true,
-      oneOf: [{ type: 'string' }, { type: 'object' }],
-    };
-    Object.assign(properties, {
-      basePrice: {
-        type: 'integer',
-        minimum: 0,
-        description: 'Blank garment price in cents.',
-      },
-      silhouette: {
-        type: 'string',
-        nullable: true,
-        description: 'App-drawn fallback, e.g. HOODIE or TSHIRT.',
-      },
-      frontPrintArea: printArea,
-      backPrintArea: printArea,
-      image: {
-        type: 'string',
-        format: 'binary',
-        description: 'Product photo shown to customers.',
-      },
-      frontImage: {
-        type: 'string',
-        format: 'binary',
-        description: 'Front mockup used as the studio canvas.',
-      },
-      backImage: {
-        type: 'string',
-        format: 'binary',
-        description: 'Back mockup used as the studio canvas.',
-      },
-    });
-  }
   if (entity === 'category') {
     properties.designCategoryId = {
       type: 'string',
@@ -148,11 +106,11 @@ export function ImageUpload(
       nullable: true,
       enum: ['JEWELRY', 'BOUQUET', 'GIFT', 'APPAREL'],
     };
-    properties.options = {
+    properties.builderConfig = {
       description:
-        'Optional dynamic option definitions or null. Multipart: JSON.stringify(options).',
+        'Studio settings or null, e.g. { "silhouette": "HOODIE" }. Multipart: JSON.stringify(builderConfig).',
       nullable: true,
-      oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'object' } }],
+      oneOf: [{ type: 'string' }, { type: 'object' }],
     };
     properties.sizes = {
       description:
@@ -181,13 +139,13 @@ export function ImageUpload(
     properties.selectedSizeId = {
       type: 'string',
       description:
-        'Optional size ID resolved from the selected category. Omit on update to preserve the size snapshot.',
+        'CUSTOMER: a size of the base product, else of the category size presets. Omit on update to preserve the size snapshot.',
     };
-    properties.selectedOptions = {
+    properties.baseProductId = {
+      type: 'string',
+      format: 'uuid',
       description:
-        'Selections validated against Category.options. Multipart: JSON.stringify(selectedOptions).',
-      nullable: true,
-      oneOf: [{ type: 'string' }, { type: 'object' }],
+        'CUSTOMER: the COMPANY product the design is made on. Required for APPAREL.',
     };
     properties.textLayers = {
       description:
@@ -223,30 +181,56 @@ export function ImageUpload(
     });
   if (entity === 'product')
     Object.assign(properties, {
-      productType: {
+      origin: {
         type: 'string',
-        enum: ['CUSTOM_DESIGN', 'READY_MADE'],
+        enum: ['COMPANY', 'CUSTOMER'],
         description:
-          'Defaults to CUSTOM_DESIGN. Cannot be changed after creation.',
+          'Defaults to CUSTOMER. COMPANY (admin only) is the catalog. Cannot be changed after creation.',
       },
       price: {
         type: 'integer',
         minimum: 0,
         maximum: 2147483647,
         description:
-          'Required for READY_MADE, in cents. CUSTOM_DESIGN price is calculated.',
+          'Required for COMPANY, in cents. CUSTOMER price is calculated.',
       },
       stock: {
         type: 'integer',
         minimum: 0,
         maximum: 2147483647,
-        description: 'Required finished-product inventory for READY_MADE.',
+        description: 'COMPANY inventory of an unsized product.',
+      },
+      sizes: {
+        description:
+          'COMPANY: stock per size, e.g. [{"size":"S","stock":20}]; null removes sizes. Multipart: JSON.stringify(sizes).',
+        nullable: true,
+        oneOf: [
+          { type: 'string' },
+          { type: 'array', items: { type: 'object' } },
+        ],
+      },
+      color: {
+        type: 'string',
+        nullable: true,
+        description: 'COMPANY apparel colour; one product is one colour.',
+      },
+      colorHex: { type: 'string', nullable: true, example: '#111111' },
+      printAreas: {
+        description:
+          'COMPANY apparel: { front?, back? } areas { x, y, width, height, widthCm?, heightCm? } as fractions of the images. Multipart: JSON.stringify(printAreas).',
+        nullable: true,
+        oneOf: [{ type: 'string' }, { type: 'object' }],
+      },
+      backImage: {
+        type: 'string',
+        format: 'binary',
+        description: 'COMPANY apparel: optional back canvas image.',
       },
     });
   if (entity === 'product')
     properties.items = {
       description:
-        'Multipart: JSON text. JSON requests: array. Required and nonempty for CUSTOM_DESIGN; optional for READY_MADE.',
+        'Multipart: JSON text. JSON requests: array. Components of a CUSTOMER design; optional for COMPANY.',
       oneOf: [
         {
           type: 'string',
@@ -294,7 +278,7 @@ export function ImageUpload(
   const options = {
     limits: {
       fileSize: MAX_IMAGE_BYTES,
-      files: entity === 'product' ? 7 : entity === 'garment' ? 3 : 1,
+      files: entity === 'product' ? 8 : 1,
       fields: 20,
       fieldSize: 1024 * 1024,
     },
@@ -323,11 +307,7 @@ export function ImageUpload(
         properties,
         required: update
           ? []
-          : [
-              'name',
-              ...(entity !== 'category' ? ['categoryId'] : []),
-              ...(entity === 'garment' ? ['basePrice'] : []),
-            ],
+          : ['name', ...(entity !== 'category' ? ['categoryId'] : [])],
       },
     }),
     UseFilters(UploadSizeFilter),
@@ -339,19 +319,11 @@ export function ImageUpload(
               { name: 'designPreview', maxCount: 1 },
               { name: 'backDesignPreview', maxCount: 1 },
               { name: 'customDesigns', maxCount: 4 },
+              { name: 'backImage', maxCount: 1 },
             ],
             options,
           )
-        : entity === 'garment'
-          ? FileFieldsInterceptor(
-              [
-                { name: 'image', maxCount: 1 },
-                { name: 'frontImage', maxCount: 1 },
-                { name: 'backImage', maxCount: 1 },
-              ],
-              options,
-            )
-          : FileInterceptor('file', options),
+        : FileInterceptor('file', options),
       MultipartFieldsInterceptor,
     ),
   );

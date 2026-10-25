@@ -5,9 +5,9 @@ export const DESIGN_SIDES = ['FRONT', 'BACK'] as const;
 export type DesignSide = (typeof DESIGN_SIDES)[number];
 
 /**
- * Builder-wide category settings. Garment shape, mockups, print areas and price live
- * on each Garment; this only holds settings shared by a whole category, e.g.
- * { "silhouette": "NECKLACE" } for a jewelry strand.
+ * Builder-wide category settings shared by every product of the category, e.g.
+ * { "silhouette": "NECKLACE" } for a jewelry strand or { "silhouette": "HOODIE" } for
+ * the app-drawn apparel fallback. Images, print areas and price live on each Product.
  */
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -46,5 +46,8 @@ export function isCanvasBuilder(builderType: string | null | undefined) {
   return (CANVAS_BUILDERS as readonly string[]).includes(builderType ?? '');
 }
 
-/** Builders that may carry personalised text layers (not priced, no stock). */
-export const TEXT_BUILDERS = ['GIFT'] as const;
+/**
+ * Builders that may carry personalised text layers, e.g. a gift message, a bouquet card or
+ * a name printed on a hoodie. Text is a studio tool: never priced, never stocked.
+ */
+export const TEXT_BUILDERS = ['GIFT', 'BOUQUET', 'APPAREL'] as const;

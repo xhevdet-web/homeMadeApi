@@ -1,70 +1,19 @@
-import { Transform, Type } from 'class-transformer';
-import {
-  ArrayMaxSize,
-  IsArray,
-  IsBoolean,
-  IsEnum,
-  IsInt,
-  Min,
-  Max,
-  IsOptional,
-  IsString,
-  IsUUID,
-  Length,
-  ValidateIf,
-  ValidateNested,
-  IsObject,
-} from 'class-validator';
-import { ProductType } from '../../../generated/prisma/client.js';
-import { ProductItemDto } from './product-item.dto.js';
-import { MAX_TEXT_LAYERS, TextLayerDto } from './text-layer.dto.js';
+import { OmitType } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
+import { IsString, IsUUID, Length, ValidateIf } from 'class-validator';
+import { CreateProductDto } from './create-product.dto.js';
 
-export class UpdateProductDto {
-  @IsOptional()
-  @IsObject()
-  selectedOptions?: Record<string, unknown> | null;
-
-  @ValidateIf((_object, value: unknown) => value !== undefined)
-  @IsString()
-  @Length(1, 200)
-  selectedSizeId?: string;
-
-  @ValidateIf((_object, value: unknown) => value !== undefined)
-  @IsEnum(ProductType)
-  productType?: ProductType;
-
-  @ValidateIf((_object, value: unknown) => value !== undefined)
-  @IsInt()
-  @Min(0)
-  @Max(2147483647)
-  price?: number;
-
-  @ValidateIf((_object, value: unknown) => value !== undefined)
-  @IsInt()
-  @Min(0)
-  @Max(2147483647)
-  stock?: number;
-
+// Origin and base product are fixed at creation; a different base is a new design.
+// Optional create fields keep their rules; the required ones may be omitted but never null.
+export class UpdateProductDto extends OmitType(CreateProductDto, [
+  'origin',
+  'baseProductId',
+  'categoryId',
+  'name',
+] as const) {
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsUUID()
   categoryId?: string;
-
-  /** Personalised text for GIFT designs; null clears it on update. */
-  @ValidateIf(
-    (_object, value: unknown) => value !== undefined && value !== null,
-  )
-  @IsArray()
-  @ArrayMaxSize(MAX_TEXT_LAYERS)
-  @ValidateNested({ each: true })
-  @Type(() => TextLayerDto)
-  textLayers?: TextLayerDto[] | null;
-
-  @ValidateIf((_object, value: unknown) => value !== undefined)
-  @IsArray()
-  @ArrayMaxSize(1000)
-  @ValidateNested({ each: true })
-  @Type(() => ProductItemDto)
-  items?: ProductItemDto[];
 
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @Transform(({ value }: { value: unknown }) =>
@@ -73,12 +22,4 @@ export class UpdateProductDto {
   @IsString()
   @Length(1, 200)
   name?: string;
-
-  @IsOptional()
-  @IsString()
-  description?: string | null;
-
-  @ValidateIf((_object, value: unknown) => value !== undefined)
-  @IsBoolean()
-  isActive?: boolean;
 }

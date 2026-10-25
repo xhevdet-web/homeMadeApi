@@ -38,7 +38,7 @@ describe('Authentication HTTP', () => {
   let passwordHash: string;
   const id = 'ac78a80a-ce2b-4c45-8076-fca001c71418';
   const password = 'ValidPassword123!';
-  const user = { findUnique: vi.fn() };
+  const user = { findUnique: vi.fn(), update: vi.fn() };
   const safe = {
     id,
     firstName: 'Test',
@@ -249,5 +249,122 @@ describe('Authentication HTTP', () => {
         .set('Authorization', 'Bearer ' + token)
         .expect(401);
     expect(user.findUnique).not.toHaveBeenCalled();
+  });
+
+  describe('change password', () => {
+    const newPassword = 'AnotherPassword456!';
+    let original: string;
+    let token: string;
+    const change = (body: object, auth = true) => {
+      const req = request(app.getHttpServer()).patch(
+        '/api/v1/auth/change-password',
+      );
+      if (auth) req.set('Authorization', 'Bearer ' + token);
+      return req.send(body);
+    };
+    const login = (secret: string) =>
+      request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email: safe.email, password: secret });
+    const valid = {
+      currentPassword: password,
+      newPassword,
+      confirmPassword: newPassword,
+    };
+
+    beforeAll(() => {
+      original = passwordHash;
+    });
+    beforeEach(async () => {
+      passwordHash = original;
+      // The mocked database keeps the hash the service writes.
+      user.update.mockImplementation(
+        async ({ data }: { data: { passwordHash: string } }) => {
+          passwordHash = data.passwordHash;
+          return { id };
+        },
+      );
+      token = await jwt.signAsync({ sub: id, tokenUse: 'access' });
+    });
+    afterAll(() => {
+      passwordHash = original;
+    });
+
+    it('changes the password of the signed-in user with a new Argon2id hash', async () => {
+      const response = await change(valid).expect(200);
+      expect(response.body).toEqual({ message: 'Password updated' });
+      expect(JSON.stringify(response.body)).not.toContain(newPassword);
+      const update = user.update.mock.calls[0][0];
+      // The user comes from the token, never from the body.
+      expect(update.where).toEqual({ id });
+      expect(Object.keys(update.data)).toEqual(['passwordHash']);
+      expect(update.data.passwordHash).toMatch(/^\$argon2id\$/);
+      expect(update.data.passwordHash).not.toContain(newPassword);
+      expect(update.select).toEqual({ id: true });
+    });
+
+    it('keeps the session and lets the new password, not the old one, sign in', async () => {
+      await change(valid).expect(200);
+      await request(app.getHttpServer())
+        .get('/api/v1/auth/me')
+        .set('Authorization', 'Bearer ' + token)
+        .expect(200);
+      await login(password).expect(401);
+      await login(newPassword).expect(200);
+    });
+
+    it.each([
+      [
+        'an incorrect current password',
+        { ...valid, currentPassword: 'WrongPassword999!' },
+        'Current password is incorrect',
+      ],
+      [
+        'a confirmation that does not match',
+        { ...valid, confirmPassword: newPassword + 'x' },
+        'New passwords do not match',
+      ],
+      [
+        'a new password shorter than the registration policy',
+        { ...valid, newPassword: 'Short1!', confirmPassword: 'Short1!' },
+        'New password does not meet the password requirements',
+      ],
+      [
+        'a new password longer than the registration policy',
+        {
+          ...valid,
+          newPassword: 'a'.repeat(129),
+          confirmPassword: 'a'.repeat(129),
+        },
+        'New password does not meet the password requirements',
+      ],
+      [
+        'the current password as the new one',
+        { ...valid, newPassword: password, confirmPassword: password },
+        'New password must be different from your current password',
+      ],
+      [
+        'a missing current password',
+        { newPassword, confirmPassword: newPassword },
+        'Current password is required',
+      ],
+      [
+        'a missing confirmation',
+        { currentPassword: password, newPassword },
+        'Please confirm your new password',
+      ],
+    ])('rejects %s', async (_case, body, message) => {
+      const response = await change(body).expect(400);
+      // DTO errors arrive as a list (the project's validation convention).
+      expect([response.body.message].flat()).toEqual([message]);
+      expect(user.update).not.toHaveBeenCalled();
+      await login(password).expect(200);
+    });
+
+    it('rejects unauthenticated requests and a userId in the body', async () => {
+      await change(valid, false).expect(401);
+      await change({ ...valid, userId: id }).expect(400);
+      expect(user.update).not.toHaveBeenCalled();
+    });
   });
 });

@@ -78,10 +78,7 @@ export class StorageService implements OnModuleDestroy {
     )
       throw new BadRequestException('Invalid storage folder');
     // Entity folders select processing centrally for both create and replacement uploads.
-    if (
-      process &&
-      ['categories', 'subcategories', 'products', 'garments'].includes(folder)
-    )
+    if (process && ['categories', 'subcategories', 'products'].includes(folder))
       file = await this.processing.process(file);
     const extension = validateImage(file);
     const key = folder + '/' + randomUUID() + extension;

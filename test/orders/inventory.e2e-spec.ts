@@ -214,6 +214,96 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
       expect(await stock(firstId)).toBe(10);
     });
 
+    it('atomically sells the last unit of one size, directly and through a design', async () => {
+      const creator = await db.user.create({
+        data: {
+          firstName: 'Admin',
+          lastName: 'Test',
+          email: 'sizes-admin@example.test',
+          passwordHash: 'test',
+          role: 'ADMIN',
+        },
+      });
+      await db.category.update({
+        where: { id: categoryId },
+        data: { builderType: 'APPAREL' },
+      });
+      // Image storage is not configured in this suite, so the catalog row is inserted directly.
+      const hoodie = await db.product.create({
+        data: {
+          createdById: creator.id,
+          categoryId,
+          origin: 'COMPANY',
+          name: 'Black Essential Hoodie',
+          price: 3500,
+          color: 'Black',
+          imageKey: 'products/hoodie.png',
+          sizes: [
+            { size: 'M', stock: 5 },
+            { size: 'L', stock: 1 },
+          ],
+        },
+      });
+      // A saved design never reserves the size.
+      const custom = await products.create(
+        {
+          categoryId,
+          name: 'Custom Black Hoodie',
+          baseProductId: hoodie.id,
+          selectedSizeId: 'L',
+          items: [
+            {
+              subCategoryId: firstId,
+              quantity: 1,
+              side: 'FRONT',
+              x: 0.5,
+              y: 0.5,
+            },
+          ],
+        },
+        customer,
+      );
+      expect(custom).toMatchObject({ price: 3500 + 150, basePrice: 3500 });
+      const sizes = async () =>
+        (await db.product.findUniqueOrThrow({ where: { id: hoodie.id } }))
+          .sizes;
+      expect(await sizes()).toEqual([
+        { size: 'M', stock: 5 },
+        { size: 'L', stock: 1 },
+      ]);
+      // The last L: a plain order and a design order race for it.
+      const results = await Promise.allSettled([
+        orders.create(
+          { productId: hoodie.id, size: 'L', paymentType: 'CASH_ON_DELIVERY' },
+          customer,
+        ),
+        place(custom.id),
+      ]);
+      expect(
+        results.filter((result) => result.status === 'fulfilled'),
+      ).toHaveLength(1);
+      expect(await sizes()).toEqual([
+        { size: 'M', stock: 5 },
+        { size: 'L', stock: 0 },
+      ]);
+      expect(await db.order.count()).toBe(1);
+      // Other sizes are untouched and still sell.
+      await orders.create(
+        { productId: hoodie.id, size: 'M', paymentType: 'CASH_ON_DELIVERY' },
+        customer,
+      );
+      expect(await sizes()).toEqual([
+        { size: 'M', stock: 4 },
+        { size: 'L', stock: 0 },
+      ]);
+      await expect(
+        orders.create(
+          { productId: hoodie.id, size: 'L', paymentType: 'CASH_ON_DELIVERY' },
+          customer,
+        ),
+      ).rejects.toThrow('sold out');
+    });
+
     it('atomically sells the last ready-made unit and keeps the purchased details after edits', async () => {
       const creator = await db.user.create({
         data: {
@@ -229,7 +319,7 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
           createdById: creator.id,
           categoryId,
           name: 'Ready bracelet',
-          productType: 'READY_MADE',
+          origin: 'COMPANY',
           price: 2500,
           stock: 1,
           imageKey: 'products/ready.png',
@@ -269,7 +359,7 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
       expect(historical.product).toMatchObject({
         name: 'Ready bracelet',
         price: 2500,
-        productType: 'READY_MADE',
+        origin: 'COMPANY',
       });
       expect(historical.product.items).toHaveLength(1);
     });
@@ -682,7 +772,7 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
       expect(product.imageKey).toBeNull();
       expect(product.price).toBe(300);
       expect(product.itemCount).toBe(2);
-      expect(upload).toHaveBeenCalledWith(expect.anything(), 'designs');
+      expect(upload).toHaveBeenCalledWith(expect.anything(), 'designs', true);
       expect(await stock(firstId)).toBe(10);
       const item = await db.productItem.findFirstOrThrow({
         where: { productId: product.id },

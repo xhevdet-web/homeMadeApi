@@ -15,11 +15,13 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user.ty
 import type { CreateProductDto } from './dto/create-product.dto.js';
 import type { UpdateProductDto } from './dto/update-product.dto.js';
 import type { ProductItemDto } from './dto/product-item.dto.js';
+import type { ProductQueryDto } from './dto/product-query.dto.js';
 import {
-  garmentVariantSelect,
+  baseProductSelect,
   productItemsSelect,
 } from './product-items.select.js';
-import { validateSelectedOptions } from '../categories/category-options.js';
+import { normalizeSizes, parseSizes, type SizeStock } from './product-sizes.js';
+import { validatePrintAreas } from './print-area.js';
 import {
   isCanvasBuilder,
   TEXT_BUILDERS,
@@ -43,14 +45,25 @@ const productInclude = {
       imageKey: true,
       sizes: true,
       builderType: true,
-      options: true,
       builderConfig: true,
       designCategoryId: true,
     },
   },
-  garmentVariant: { select: garmentVariantSelect },
+  baseProduct: { select: baseProductSelect },
   items: productItemsSelect,
 } satisfies Prisma.ProductInclude;
+
+// Fields only an admin sets on a COMPANY product; CUSTOMER prices are calculated.
+const COMPANY_FIELDS = [
+  'price',
+  'stock',
+  'sizes',
+  'color',
+  'colorHex',
+  'printAreas',
+] as const;
+const CUSTOMER_INVENTORY =
+  'Customer design price is calculated; inventory belongs to its components and base product';
 
 @Injectable()
 export class ProductsService {
@@ -66,29 +79,37 @@ export class ProductsService {
     designPreview?: Express.Multer.File,
     backDesignPreview?: Express.Multer.File,
     customDesigns: Express.Multer.File[] = [],
+    backImage?: Express.Multer.File,
   ) {
-    const readyMade = dto.productType === 'READY_MADE';
-    if (readyMade && customDesigns.length)
-      throw new BadRequestException(
-        'Ready-made products cannot include uploaded designs',
-      );
-    if (readyMade) {
+    const company = dto.origin === 'COMPANY';
+    if (company) {
       this.requireAdmin(user);
-      this.validateInventory(dto.price, dto.stock);
+      if (customDesigns.length || dto.baseProductId !== undefined)
+        throw new BadRequestException(
+          'Company products cannot include uploaded designs or a base product',
+        );
       if (!file)
         throw new BadRequestException(
-          'Ready-made products require an uploaded image',
+          'Company products require an uploaded image',
         );
-    } else if (dto.price !== undefined || dto.stock !== undefined) {
-      throw new BadRequestException(
-        'Custom design price is calculated and inventory uses component stock',
-      );
+    } else if (
+      COMPANY_FIELDS.some((field) => dto[field] !== undefined) ||
+      backImage
+    ) {
+      throw new BadRequestException(CUSTOMER_INVENTORY);
     }
+    // Printed artwork must keep transparency, so customer uploads are PNG only (the
+    // signature is checked against the declared type when the file is stored).
+    if (customDesigns.some((upload) => upload.mimetype !== 'image/png'))
+      throw new BadRequestException('Uploaded designs must be PNG images');
+    const inventory = company ? this.companyInventory(dto) : undefined;
+    const printAreas = company ? validatePrintAreas(dto.printAreas) : undefined;
     return this.images.saveMany(
       [
         { file, folder: 'products' },
         { file: designPreview, folder: 'designs' },
         { file: backDesignPreview, folder: 'designs' },
+        { file: backImage, folder: 'products' },
         // Customer artwork is stored untouched: it is printed as uploaded.
         ...customDesigns.map((upload) => ({
           file: upload,
@@ -96,14 +117,20 @@ export class ProductsService {
           process: false,
         })),
       ],
-      async ([key, previewKey, backPreviewKey, ...customKeys]) => ({
+      async ([
+        key,
+        previewKey,
+        backPreviewKey,
+        backImageKey,
+        ...customKeys
+      ]) => ({
         result: await this.query(() =>
           this.prisma.$transaction(async (tx) => {
             const category = await this.categoryConfiguration(
               tx,
               dto.categoryId,
             );
-            const calculated = readyMade
+            const calculated = company
               ? await this.readyMadeItems(tx, dto.categoryId, dto.items)
               : await this.calculateCustomItems(
                   tx,
@@ -111,24 +138,18 @@ export class ProductsService {
                   dto.items ?? [],
                   customKeys,
                 );
-            const selectedOptions = validateSelectedOptions(
-              category.options,
-              dto.selectedOptions,
-            );
             const textLayers = this.textLayers(category, dto.textLayers);
-            const garment = readyMade
-              ? { garmentVariantId: undefined, basePrice: 0 }
-              : await this.resolveGarmentVariant(
-                  tx,
-                  category,
-                  dto.garmentVariantId,
-                );
-            if (calculated.price + garment.basePrice > 2147483647)
+            const base = company
+              ? undefined
+              : await this.resolveBaseProduct(tx, category, dto.baseProductId);
+            const basePrice = base?.price ?? 0;
+            if (calculated.price + basePrice > 2147483647)
               throw new BadRequestException(
                 'Product quantity or price exceeds the supported integer range',
               );
-            const selectedSize =
-              dto.selectedSizeId === undefined
+            const selectedSize = base?.sizes.length
+              ? this.resolveBaseSize(base, dto.selectedSizeId)
+              : dto.selectedSizeId === undefined
                 ? undefined
                 : await this.resolveSize(
                     tx,
@@ -138,26 +159,27 @@ export class ProductsService {
                   );
             return tx.product.create({
               data: {
+                origin: dto.origin ?? 'CUSTOMER',
                 selectedSize,
-                selectedOptions:
-                  selectedOptions === null ? Prisma.DbNull : selectedOptions,
                 textLayers: textLayers ?? undefined,
                 createdById: user.id,
                 categoryId: dto.categoryId,
+                baseProductId: base?.id,
                 name: dto.name,
                 description: dto.description,
 
                 imageKey: key,
+                backImageKey,
                 designPreviewKey: previewKey,
                 backDesignPreviewKey: backPreviewKey,
-                garmentVariantId: garment.garmentVariantId,
-                basePrice: garment.basePrice,
+                color: company ? dto.color : undefined,
+                colorHex: company ? dto.colorHex : undefined,
+                printAreas,
+                sizes: inventory?.sizes ?? undefined,
+                stock: inventory?.stock ?? 0,
+                basePrice,
                 isActive: dto.isActive,
-                productType: dto.productType ?? 'CUSTOM_DESIGN',
-                stock: readyMade ? dto.stock : 0,
-                price: readyMade
-                  ? dto.price
-                  : calculated.price + garment.basePrice,
+                price: company ? dto.price : calculated.price + basePrice,
                 itemCount: calculated.itemCount,
                 items: { create: calculated.items },
               },
@@ -169,18 +191,37 @@ export class ProductsService {
     );
   }
 
-  findAll() {
-    return this.list({});
+  /** Filtered by category, origin, creator, status and a name/description/colour search. */
+  findAll(query: ProductQueryDto = {}) {
+    const search = query.search
+      ? { contains: query.search, mode: 'insensitive' as const }
+      : undefined;
+    return this.list({
+      categoryId: query.categoryId,
+      origin: query.origin,
+      createdById: query.createdById,
+      isActive: query.isActive,
+      ...(search
+        ? {
+            OR: [{ name: search }, { description: search }, { color: search }],
+          }
+        : {}),
+    });
   }
 
-  async findCompletedCreationsFromOthers(user: AuthenticatedUser) {
+  /** Completed customer designs of other users, optionally of one category. */
+  async findCompletedCreationsFromOthers(
+    user: AuthenticatedUser,
+    categoryId?: string,
+  ) {
     const orders = await this.query(() =>
       this.prisma.order.findMany({
         where: {
           status: 'COMPLETED',
           product: {
             createdById: { not: user.id },
-            productType: 'CUSTOM_DESIGN',
+            origin: 'CUSTOMER',
+            categoryId,
           },
         },
         select: {
@@ -253,18 +294,22 @@ export class ProductsService {
     file?: Express.Multer.File,
     designPreview?: Express.Multer.File,
     backDesignPreview?: Express.Multer.File,
+    backImage?: Express.Multer.File,
   ) {
     this.requireAdmin(user);
+    const printAreas = validatePrintAreas(dto.printAreas);
     return this.images.saveMany(
       [
         { file, folder: 'products' },
         { file: designPreview, folder: 'designs' },
         { file: backDesignPreview, folder: 'designs' },
+        { file: backImage, folder: 'products' },
       ],
-      async ([key, previewKey, backPreviewKey]) => {
+      async ([key, previewKey, backPreviewKey, backImageKey]) => {
         let oldKey: string | null | undefined;
         let oldPreviewKey: string | null | undefined;
         let oldBackPreviewKey: string | null | undefined;
+        let oldBackImageKey: string | null | undefined;
         const result = await this.query(() =>
           this.prisma.$transaction(async (tx) => {
             // Shared lock protocol with order creation: a design cannot change underneath an order.
@@ -276,45 +321,38 @@ export class ProductsService {
             if (!product) throw new NotFoundException('Product not found');
             const categoryId = dto.categoryId ?? product.categoryId;
             const category = await this.categoryConfiguration(tx, categoryId);
-            const selectedOptions = validateSelectedOptions(
-              category.options,
-              dto.selectedOptions === undefined
-                ? product.selectedOptions
-                : dto.selectedOptions,
-            );
             const textLayers =
               dto.textLayers === undefined
                 ? undefined
                 : this.textLayers(category, dto.textLayers);
+            const company = product.origin === 'COMPANY';
             if (
-              dto.productType !== undefined &&
-              dto.productType !== (product.productType ?? 'CUSTOM_DESIGN')
+              !company &&
+              (COMPANY_FIELDS.some((field) => dto[field] !== undefined) ||
+                backImageKey)
             )
-              throw new BadRequestException('Product type cannot be changed');
+              throw new BadRequestException(CUSTOMER_INVENTORY);
             if (
-              product.productType !== 'READY_MADE' &&
-              (dto.price !== undefined || dto.stock !== undefined)
+              product.baseProductId &&
+              dto.categoryId !== undefined &&
+              dto.categoryId !== product.categoryId
             )
               throw new BadRequestException(
-                'Custom design price is calculated and inventory uses component stock',
+                'A design made on a base product stays in its category',
               );
             oldKey = product.imageKey;
             oldPreviewKey = product.designPreviewKey;
             oldBackPreviewKey = product.backDesignPreviewKey;
+            oldBackImageKey = product.backImageKey;
             const data: Prisma.ProductUpdateInput = {
               name: dto.name,
               description: dto.description,
 
               imageKey: key,
+              backImageKey,
               designPreviewKey: previewKey,
               backDesignPreviewKey: backPreviewKey,
               isActive: dto.isActive,
-              selectedOptions:
-                dto.selectedOptions === undefined
-                  ? undefined
-                  : selectedOptions === null
-                    ? Prisma.DbNull
-                    : selectedOptions,
               textLayers:
                 textLayers === undefined
                   ? undefined
@@ -322,13 +360,22 @@ export class ProductsService {
                     ? Prisma.DbNull
                     : textLayers,
             };
-            if (product.productType === 'READY_MADE') {
-              this.validateInventory(
-                dto.price ?? product.price,
-                dto.stock ?? product.stock,
-              );
+            if (company) {
+              const sizes =
+                dto.sizes === undefined ? parseSizes(product.sizes) : dto.sizes;
+              const inventory = this.companyInventory({
+                price: dto.price ?? product.price,
+                stock: dto.stock ?? (sizes?.length ? undefined : product.stock),
+                sizes,
+              });
               data.price = dto.price;
-              data.stock = dto.stock;
+              data.stock = inventory.stock;
+              if (dto.sizes !== undefined)
+                data.sizes = inventory.sizes ?? Prisma.DbNull;
+              data.color = dto.color;
+              data.colorHex = dto.colorHex;
+              if (dto.printAreas !== undefined)
+                data.printAreas = printAreas ?? Prisma.DbNull;
               if (dto.items !== undefined || dto.categoryId !== undefined) {
                 const categoryId = dto.categoryId ?? product.categoryId;
                 const calculated = await this.readyMadeItems(
@@ -349,7 +396,7 @@ export class ProductsService {
               // Orders reference this design. Preserve quantities and unit-price snapshots for order history.
               if (
                 dto.items !== undefined ||
-                dto.selectedOptions !== undefined ||
+                dto.selectedSizeId !== undefined ||
                 dto.textLayers !== undefined ||
                 (dto.categoryId !== undefined &&
                   dto.categoryId !== product.categoryId)
@@ -381,12 +428,24 @@ export class ProductsService {
                 items,
               );
               data.category = { connect: { id: categoryId } };
-              // The garment price was snapshotted when the design was created.
+              // The base product price was snapshotted when the design was created.
               data.price = calculated.price + (product.basePrice ?? 0);
               data.itemCount = calculated.itemCount;
               data.items = { deleteMany: {}, create: calculated.items };
             }
-            if (dto.selectedSizeId !== undefined) {
+            const base = product.baseProductId
+              ? await tx.product.findUnique({
+                  where: { id: product.baseProductId },
+                  select: { name: true, sizes: true },
+                })
+              : null;
+            const baseSizes = parseSizes(base?.sizes);
+            if (dto.selectedSizeId !== undefined && base && baseSizes.length) {
+              data.selectedSize = this.resolveBaseSize(
+                { name: base.name, sizes: baseSizes },
+                dto.selectedSizeId,
+              );
+            } else if (dto.selectedSizeId !== undefined) {
               data.selectedSize = await this.resolveSize(
                 tx,
                 dto.categoryId ?? product.categoryId,
@@ -397,8 +456,8 @@ export class ProductsService {
                 ),
               );
             } else if (
-              dto.items !== undefined ||
-              dto.categoryId !== undefined
+              !base &&
+              (dto.items !== undefined || dto.categoryId !== undefined)
             ) {
               // Preserve the stored size snapshot; never accept frontend limits.
               const category = await tx.category.findUnique({
@@ -423,11 +482,15 @@ export class ProductsService {
         );
         return {
           result,
-          oldKeys: [
-            key ? oldKey : undefined,
-            previewKey ? oldPreviewKey : undefined,
-            backPreviewKey ? oldBackPreviewKey : undefined,
-          ],
+          oldKeys: await this.unsharedKeys(
+            [
+              key ? oldKey : undefined,
+              previewKey ? oldPreviewKey : undefined,
+              backPreviewKey ? oldBackPreviewKey : undefined,
+              backImageKey ? oldBackImageKey : undefined,
+            ],
+            id,
+          ),
         };
       },
     );
@@ -440,18 +503,75 @@ export class ProductsService {
         where: { id },
         select: {
           imageKey: true,
+          backImageKey: true,
           designPreviewKey: true,
           backDesignPreviewKey: true,
           items: { select: { customImageKey: true } },
         },
       }),
     );
-    await this.images.cleanup([
-      record.imageKey,
-      record.designPreviewKey,
-      record.backDesignPreviewKey,
-      ...record.items.map((item) => item.customImageKey),
-    ]);
+    await this.images.cleanup(
+      await this.unsharedKeys(
+        [
+          record.imageKey,
+          record.backImageKey,
+          record.designPreviewKey,
+          record.backDesignPreviewKey,
+          ...record.items.map((item) => item.customImageKey),
+        ],
+        id,
+      ),
+    );
+  }
+
+  /**
+   * Keys no other product still uses. Garments sold in several colours were migrated
+   * to one product per colour sharing the garment's images, so an image is removed
+   * from storage only when its last product lets go of it.
+   */
+  private async unsharedKeys(
+    keys: (string | null | undefined)[],
+    productId: string,
+  ) {
+    const candidates = keys.filter((key): key is string => !!key);
+    if (!candidates.length) return [];
+    const shared = await this.query(() =>
+      this.prisma.product.findMany({
+        where: {
+          id: { not: productId },
+          OR: [
+            { imageKey: { in: candidates } },
+            { backImageKey: { in: candidates } },
+          ],
+        },
+        select: { imageKey: true, backImageKey: true },
+      }),
+    );
+    const used = new Set(
+      shared.flatMap((product) => [product.imageKey, product.backImageKey]),
+    );
+    return candidates.filter((key) => !used.has(key));
+  }
+
+  /**
+   * COMPANY inventory is either one `stock` or stock per size, never both. Returns the
+   * values to store; sizes is null for an unsized product.
+   */
+  private companyInventory(dto: {
+    price?: number;
+    stock?: number;
+    sizes?: SizeStock[] | null;
+  }) {
+    const sizes = dto.sizes?.length ? normalizeSizes(dto.sizes) : null;
+    if (sizes && dto.stock !== undefined && dto.stock !== 0)
+      throw new BadRequestException(
+        'Sized products keep their stock per size; leave stock empty',
+      );
+    this.validateInventory(dto.price, sizes ? 0 : dto.stock);
+    return {
+      sizes: sizes as unknown as Prisma.InputJsonArray | null,
+      stock: sizes ? 0 : (dto.stock as number),
+    };
   }
 
   private requireAdmin(user: AuthenticatedUser) {
@@ -506,7 +626,6 @@ export class ProductsService {
       select: {
         id: true,
         builderType: true,
-        options: true,
         builderConfig: true,
         designCategoryId: true,
       },
@@ -591,7 +710,10 @@ export class ProductsService {
     return calculated;
   }
 
-  /** Personalised text is only offered by GIFT builders; it is not priced. */
+  /**
+   * Personalised text (gift, bouquet and apparel studios); it is not priced. Apparel text
+   * is printed on one side, so it must name it; other studios have one canvas.
+   */
   private textLayers(
     category: { builderType: string | null },
     layers: TextLayerDto[] | null | undefined,
@@ -601,9 +723,16 @@ export class ProductsService {
     if (
       !(TEXT_BUILDERS as readonly string[]).includes(category.builderType ?? '')
     )
-      throw new BadRequestException('Only gift designs can include text');
+      throw new BadRequestException(
+        'Only gift, bouquet and apparel designs can include text',
+      );
     if (new Set(layers.map((layer) => layer.id)).size !== layers.length)
       throw new BadRequestException('Text layer ids must be unique');
+    const apparel = category.builderType === 'APPAREL';
+    if (apparel && layers.some((layer) => !layer.side))
+      throw new BadRequestException(
+        'Apparel text must say which side it is printed on',
+      );
     return layers.map((layer) => ({
       id: layer.id,
       text: layer.text,
@@ -611,66 +740,71 @@ export class ProductsService {
       y: layer.y,
       scale: layer.scale,
       rotation: layer.rotation,
+      ...(apparel ? { side: layer.side } : {}),
       ...(layer.color ? { color: layer.color } : {}),
       ...(layer.font ? { font: layer.font } : {}),
+      ...(layer.weight && layer.weight !== 'REGULAR'
+        ? { weight: layer.weight }
+        : {}),
+      ...(layer.italic ? { italic: true } : {}),
     }));
   }
 
   /**
-   * APPAREL designs are printed on one garment size × colour. Returns the variant and
-   * its price (variant override, else the garment's basePrice) to snapshot.
+   * The COMPANY product a design is made on, in the same category. APPAREL designs
+   * are always printed on one; other studios may build from components only. Stock is
+   * checked here but never taken: it only changes when an order is placed.
    */
-  private async resolveGarmentVariant(
+  private async resolveBaseProduct(
     tx: Prisma.TransactionClient,
     category: { id: string; builderType: string | null },
-    garmentVariantId: string | undefined,
+    baseProductId: string | undefined,
   ) {
-    if (category.builderType !== 'APPAREL') {
-      if (garmentVariantId !== undefined)
-        throw new BadRequestException(
-          'Only APPAREL designs can choose a garment',
-        );
-      return { garmentVariantId: undefined, basePrice: 0 };
+    if (!baseProductId) {
+      if (category.builderType === 'APPAREL')
+        throw new BadRequestException('Choose the piece to design on');
+      return undefined;
     }
-    if (!garmentVariantId)
-      throw new BadRequestException(
-        'Choose a garment size and colour for this design',
-      );
-    const variant = await tx.garmentVariant.findUnique({
-      where: { id: garmentVariantId },
+    const base = await tx.product.findUnique({
+      where: { id: baseProductId },
       select: {
         id: true,
-        size: true,
-        colorName: true,
-        stock: true,
-        price: true,
+        name: true,
+        origin: true,
+        categoryId: true,
         isActive: true,
-        garment: {
-          select: {
-            categoryId: true,
-            isActive: true,
-            basePrice: true,
-            name: true,
-          },
-        },
+        price: true,
+        stock: true,
+        sizes: true,
       },
     });
-    if (!variant || variant.garment.categoryId !== category.id)
+    if (!base || base.origin !== 'COMPANY' || base.categoryId !== category.id)
+      throw new BadRequestException('Base product not found in this category');
+    if (!base.isActive)
+      throw new BadRequestException(`${base.name} is no longer available`);
+    const sizes = parseSizes(base.sizes);
+    if (!sizes.length && base.stock < 1)
+      throw new BadRequestException(`${base.name} is sold out`);
+    return { ...base, sizes };
+  }
+
+  /** A sized base product needs one of its sizes, in stock right now. */
+  private resolveBaseSize(
+    base: { name: string; sizes: SizeStock[] },
+    sizeId: string | undefined,
+  ): Prisma.InputJsonObject {
+    if (sizeId === undefined)
+      throw new BadRequestException(`Choose a size of ${base.name}`);
+    const size = base.sizes.find((entry) => entry.size === sizeId);
+    if (!size)
       throw new BadRequestException(
-        'Garment size and colour not found in this category',
+        `${base.name} is not available in size ${sizeId}`,
       );
-    if (!variant.isActive || !variant.garment.isActive)
+    if (size.stock < 1)
       throw new BadRequestException(
-        `${variant.garment.name} in ${variant.colorName} / ${variant.size} is no longer available`,
+        `${base.name} in size ${sizeId} is sold out`,
       );
-    if (variant.stock < 1)
-      throw new BadRequestException(
-        `${variant.garment.name} in ${variant.colorName} / ${variant.size} is sold out`,
-      );
-    return {
-      garmentVariantId: variant.id,
-      basePrice: variant.price ?? variant.garment.basePrice,
-    };
+    return { id: size.size, name: size.size };
   }
 
   private validateSizeLimit(
@@ -848,7 +982,7 @@ export class ProductsService {
           );
         if (error.code === 'P2003')
           throw new ConflictException(
-            'A related record no longer exists or the product is still referenced',
+            'A related record no longer exists, or this product is still used by orders or customer designs; deactivate it instead',
           );
       }
       throw new InternalServerErrorException(

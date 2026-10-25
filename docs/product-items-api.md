@@ -146,11 +146,11 @@ They use DATABASE_URL and remove only their own temporary schema afterward.
 
 ## Ready-made products
 
-`POST /api/v1/products` accepts `productType: "READY_MADE"` for admins only. Send `categoryId`, `name`, `price` (cents), `stock`, and an uploaded image in the multipart `file` field. `description`, `isActive`, and `items` are optional. Multipart `items` uses JSON text. Price and stock must be integers from 0 to 2147483647. Ready-made components are informational and never determine the selling price or consume inventory on purchase.
+`POST /api/v1/products` accepts `origin: "COMPANY"` for admins only. Send `categoryId`, `name`, `price` (cents), an uploaded image in the multipart `file` field, and either `stock` or `sizes` (JSON, e.g. `[{"size":"M","stock":28}]`, stock kept per size). Apparel products may add `color`, `colorHex`, `printAreas` (JSON `{ front?, back? }`) and a `backImage` file. `description`, `isActive`, and `items` are optional. Price and stock must be integers from 0 to 2147483647. Company components are informational and never determine the selling price or consume inventory on purchase.
 
-Admins can edit these fields through `PATCH /api/v1/products/:id`, including price and stock after purchases. Product type cannot be changed after creation. Product responses include `productType` and finished-product `stock`.
+Admins can edit these fields through `PATCH /api/v1/products/:id`, including price, stock and sizes after purchases. Origin and base product cannot be changed after creation. Product responses include `origin`, `stock`, `sizes` and, for designs, `baseProduct` and `selectedSize`.
 
-Omitting `productType` defaults to `CUSTOM_DESIGN`, including all migrated products. Custom designs still require nonempty components, calculate their price, and use component inventory; client-set product price/stock are rejected.
+Omitting `origin` defaults to `CUSTOMER`. Customer designs calculate their price (base product price + components) and use component inventory; client-set price, stock, sizes and colours are rejected. Apparel designs require `baseProductId` (a company product of the same category) and, when it is sold in sizes, `selectedSizeId`. See `products-api.md`.
 
 
 ## Optional category sizes

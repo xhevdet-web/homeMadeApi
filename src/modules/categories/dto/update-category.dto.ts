@@ -25,9 +25,6 @@ export class UpdateCategoryDto {
   @IsUUID()
   designCategoryId?: string | null;
 
-  @IsOptional()
-  options?: unknown[] | null;
-
   // Validated in the service by validateBuilderConfig.
   @IsOptional()
   builderConfig?: Record<string, unknown> | null;

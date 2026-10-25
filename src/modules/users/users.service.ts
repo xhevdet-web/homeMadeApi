@@ -5,8 +5,8 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { hash, argon2id } from 'argon2';
 import { PrismaService } from '../../database/prisma.service.js';
+import { hashPassword } from '../auth/password.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import type { CreateUserDto } from './dto/create-user.dto.js';
 import type { UpdateUserDto } from './dto/update-user.dto.js';
@@ -33,7 +33,7 @@ export class UsersService {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
   async create(dto: CreateUserDto) {
-    const passwordHash = await hash(dto.password, { type: argon2id });
+    const passwordHash = await hashPassword(dto.password);
     return this.query(() =>
       this.prisma.user.create({
         data: {
