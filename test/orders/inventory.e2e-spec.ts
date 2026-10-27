@@ -85,6 +85,7 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
     beforeEach(async () => {
       await db.order.deleteMany();
       await db.product.deleteMany();
+      await db.giftPackaging.deleteMany();
       await db.subCategory.deleteMany();
       await db.category.deleteMany();
       await db.user.deleteMany();
@@ -943,6 +944,204 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
         design([{ subCategoryId: randomUUID(), quantity: 1 }]),
       ).rejects.toThrow('SubCategory not found');
       expect(await db.product.count()).toBe(0);
+    });
+
+    it('prices gift packaging on save and takes its stock only when ordered', async () => {
+      await db.category.update({
+        where: { id: categoryId },
+        data: { builderType: 'GIFT' },
+      });
+      const box = await db.giftPackaging.create({
+        data: {
+          name: 'Classic Closed Box',
+          type: 'OPAQUE',
+          price: 500,
+          colors: {
+            create: [
+              { name: 'Pink', hex: '#E8B4BC', priceAdjustment: 50, stock: 1 },
+              { name: 'Beige', hex: '#E5D3B3', stock: 0 },
+            ],
+          },
+        },
+        include: { colors: true },
+      });
+      const transparent = await db.giftPackaging.create({
+        data: {
+          name: 'Transparent Box',
+          type: 'TRANSPARENT',
+          price: 400,
+          stock: 3,
+        },
+      });
+      const pink = box.colors.find((color) => color.name === 'Pink')!;
+      const beige = box.colors.find((color) => color.name === 'Beige')!;
+      const item = { subCategoryId: firstId, quantity: 2, x: 0.5, y: 0.5 };
+      const gift = await products.create(
+        {
+          categoryId,
+          name: 'Birthday Gift',
+          items: [item],
+          giftPackagingId: box.id,
+          giftPackagingColorId: pink.id,
+        },
+        customer,
+      );
+      expect(gift).toMatchObject({ packagingPrice: 550, price: 300 + 550 });
+      expect(gift.giftPackagingColor?.name).toBe('Pink');
+      // Saving a design never takes stock.
+      const color = (id: string) =>
+        db.giftPackagingColor.findUniqueOrThrow({ where: { id } });
+      expect((await color(pink.id)).stock).toBe(1);
+      await expect(
+        products.create(
+          {
+            categoryId,
+            name: 'Sold out',
+            items: [item],
+            giftPackagingId: box.id,
+            giftPackagingColorId: beige.id,
+          },
+          customer,
+        ),
+      ).rejects.toThrow('sold out');
+
+      const order = await place(gift.id);
+      expect(order.totalPrice).toBe(850);
+      expect(order.product).toMatchObject({
+        packagingPrice: 550,
+        giftPackaging: { name: 'Classic Closed Box', type: 'OPAQUE' },
+        giftPackagingColor: { name: 'Pink', hex: '#E8B4BC' },
+      });
+      expect((await color(pink.id)).stock).toBe(0);
+      expect(await stock(firstId)).toBe(8);
+      // The last pink box is gone: ordering again rolls back components too.
+      await expect(place(gift.id)).rejects.toThrow('sold out');
+      expect(await stock(firstId)).toBe(8);
+
+      const clear = await products.create(
+        {
+          categoryId,
+          name: 'See-through gift',
+          items: [item],
+          giftPackagingId: transparent.id,
+        },
+        customer,
+      );
+      expect(clear).toMatchObject({ giftPackagingColorId: null, price: 700 });
+      await place(clear.id);
+      expect(
+        (
+          await db.giftPackaging.findUniqueOrThrow({
+            where: { id: transparent.id },
+          })
+        ).stock,
+      ).toBe(2);
+      // Deactivated packaging stops new orders but keeps the saved design intact.
+      await db.giftPackaging.update({
+        where: { id: transparent.id },
+        data: { isActive: false },
+      });
+      await expect(place(clear.id)).rejects.toThrow('no longer available');
+      expect((await products.findOne(clear.id)).giftPackaging?.name).toBe(
+        'Transparent Box',
+      );
+    });
+    it('sizes bracelets by length: saves drafts, rejects overfill, orders from the minimum price', async () => {
+      // A bracelet measured in millimetres: 4–6 cm keeps the test inside the fixture stock.
+      const size = {
+        id: 'tiny',
+        name: 'Tiny',
+        minMeasurementMm: 40,
+        maxMeasurementMm: 60,
+        defaultMeasurementMm: 50,
+      };
+      await db.category.update({
+        where: { id: categoryId },
+        data: { name: 'Bracelet', builderType: 'JEWELRY', sizes: [size] },
+      });
+      await db.subCategory.update({
+        where: { id: firstId },
+        data: { effectiveLengthMm: 8 },
+      });
+      await db.subCategory.update({
+        where: { id: secondId },
+        data: { effectiveLengthMm: 10 },
+      });
+      const bracelet = (
+        items: { subCategoryId: string; quantity: number }[],
+        selectedMeasurementMm = 50,
+      ) =>
+        products.create(
+          {
+            categoryId,
+            name: 'Bracelet',
+            selectedSizeId: 'tiny',
+            selectedMeasurementMm,
+            items,
+          },
+          customer,
+        );
+
+      // 4 × 8 mm + 1 × 10 mm = 42 mm of 50 mm: an unfinished design still saves.
+      const draft = await bracelet([
+        { subCategoryId: firstId, quantity: 4 },
+        { subCategoryId: secondId, quantity: 1 },
+      ]);
+      expect(draft.selectedSize).toEqual({
+        ...size,
+        selectedMeasurementMm: 50,
+      });
+      expect(draft.price).toBe(4 * 150 + 200);
+      expect(await stock(firstId)).toBe(10);
+      expect(await stock(secondId)).toBe(5);
+      // An unfinished bracelet may be ordered, but not below €5.00: 1 × €1.50 is refused.
+      const cheap = await bracelet([{ subCategoryId: firstId, quantity: 1 }]);
+      await expect(place(cheap.id)).rejects.toThrow('Bracelets start at €5.00');
+      expect(await stock(firstId)).toBe(10);
+
+      // 5 × 8 + 2 × 10 = 60 mm cannot fit a 50 mm bracelet (52 mm with tolerance).
+      await expect(
+        bracelet([
+          { subCategoryId: firstId, quantity: 5 },
+          { subCategoryId: secondId, quantity: 2 },
+        ]),
+      ).rejects.toThrow('longer than the chosen 5 cm');
+      await expect(
+        bracelet([{ subCategoryId: firstId, quantity: 1 }], 70),
+      ).rejects.toThrow('4 cm to 6 cm');
+      await expect(
+        products.create(
+          {
+            categoryId,
+            name: 'No length',
+            selectedSizeId: 'tiny',
+            items: [{ subCategoryId: firstId, quantity: 1 }],
+          },
+          customer,
+        ),
+      ).rejects.toThrow('Choose the length');
+
+      // 5 × 8 + 1 × 10 = 50 mm, €9.50: ordered, and only then stock is taken.
+      const complete = await bracelet([
+        { subCategoryId: firstId, quantity: 5 },
+        { subCategoryId: secondId, quantity: 1 },
+      ]);
+      const order = await place(complete.id);
+      expect(order.totalPrice).toBe(5 * 150 + 200);
+      expect(order.product).toMatchObject({
+        selectedSize: { selectedMeasurementMm: 50 },
+      });
+      expect(await stock(firstId)).toBe(5);
+      expect(await stock(secondId)).toBe(4);
+
+      // A component nobody has measured yet cannot be used in a length-sized bracelet.
+      await db.subCategory.update({
+        where: { id: secondId },
+        data: { effectiveLengthMm: null },
+      });
+      await expect(
+        bracelet([{ subCategoryId: secondId, quantity: 1 }]),
+      ).rejects.toThrow('Red bead does not have a physical size configured');
     });
   },
 );

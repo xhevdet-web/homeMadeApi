@@ -10,6 +10,7 @@ import {
   ValidateIf,
   IsUUID,
 } from 'class-validator';
+import { MAX_MEASUREMENT_MM } from '../../categories/jewelry-measurement.js';
 
 export class CreateSubCategoryDto {
   @IsUUID()
@@ -45,6 +46,19 @@ export class CreateSubCategoryDto {
   @Min(0)
   @Max(2147483647)
   stock?: number;
+
+  /**
+   * Jewelry components: the length one piece occupies on the cord, in whole millimetres (an
+   * 8 mm round bead is 8). Required for new jewelry components; "" or null clears it.
+   */
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
+  @IsInt()
+  @Min(1)
+  @Max(MAX_MEASUREMENT_MM)
+  effectiveLengthMm?: number | null;
 
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsBoolean()

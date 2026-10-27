@@ -3,11 +3,14 @@ import { Transform } from 'class-transformer';
 import { IsString, IsUUID, Length, ValidateIf } from 'class-validator';
 import { CreateProductDto } from './create-product.dto.js';
 
-// Origin and base product are fixed at creation; a different base is a new design.
-// Optional create fields keep their rules; the required ones may be omitted but never null.
+// Origin, base product and gift packaging are fixed at creation; customers save an edited
+// design as a new Product. Optional create fields keep their rules; the required ones may be
+// omitted but never null.
 export class UpdateProductDto extends OmitType(CreateProductDto, [
   'origin',
   'baseProductId',
+  'giftPackagingId',
+  'giftPackagingColorId',
   'categoryId',
   'name',
 ] as const) {

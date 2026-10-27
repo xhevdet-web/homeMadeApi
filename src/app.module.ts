@@ -6,6 +6,7 @@ import { OrdersModule } from './modules/orders/orders.module.js';
 import { CategoriesModule } from './modules/categories/categories.module.js';
 import { SubCategoriesModule } from './modules/sub-categories/sub-categories.module.js';
 import { ContactModule } from './modules/contact/contact.module.js';
+import { GiftPackagingModule } from './modules/gift-packaging/gift-packaging.module.js';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { StorageModule } from './storage/storage.module.js';
@@ -24,6 +25,7 @@ import { AppService } from './app.service.js';
     CategoriesModule,
     SubCategoriesModule,
     ContactModule,
+    GiftPackagingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -21,6 +21,16 @@ import {
   selectedSizeId,
   takeSizeStock,
 } from '../products/product-sizes.js';
+import {
+  giftPackagingColorSelect,
+  giftPackagingSelect,
+  takeGiftPackagingStock,
+} from '../gift-packaging/gift-packaging.selection.js';
+import {
+  assertJewelryMinimumPrice,
+  isJewelryCategory,
+  isNecklaceCategory,
+} from '../categories/jewelry-measurement.js';
 import { StorageService } from '../../storage/storage.service.js';
 import { ImageWriteService } from '../../storage/image-write.service.js';
 import { MailService } from '../../mail/mail.service.js';
@@ -84,6 +94,9 @@ function orderSelect(user: AuthenticatedUser) {
         itemCount: true,
         price: true,
         basePrice: true,
+        packagingPrice: true,
+        giftPackaging: { select: giftPackagingSelect },
+        giftPackagingColor: { select: giftPackagingColorSelect },
         origin: true,
         stock: true,
         selectedSize: true,
@@ -204,6 +217,9 @@ export class OrdersService {
                 designPreviewKey: true,
                 backDesignPreviewKey: true,
                 basePrice: true,
+                giftPackagingId: true,
+                giftPackagingColorId: true,
+                packagingPrice: true,
                 category: {
                   select: {
                     id: true,
@@ -242,6 +258,7 @@ export class OrdersService {
                         stock: true,
                         trackStock: true,
                         isActive: true,
+                        effectiveLengthMm: true,
                       },
                     },
                   },
@@ -329,8 +346,10 @@ export class OrdersService {
               }
             }
             const quantities = new Map<string, number>();
-            // Designs start from the base product price snapshotted on the design.
-            let totalPrice = company ? product.price : (product.basePrice ?? 0);
+            // Designs start from the base product and packaging prices snapshotted on the design.
+            let totalPrice = company
+              ? product.price
+              : (product.basePrice ?? 0) + (product.packagingPrice ?? 0);
             if (!Number.isInteger(totalPrice) || totalPrice < 0)
               throw new BadRequestException('Product has an invalid price');
             for (const item of company ? [] : product.items) {
@@ -358,6 +377,13 @@ export class OrdersService {
                   'SubCategory is inactive: ' + item.subCategory.name,
                 );
             }
+            // A jewelry design may be ordered before it fills its chosen length, but not
+            // below the minimum price.
+            if (!company && isJewelryCategory(product.category))
+              assertJewelryMinimumPrice(
+                totalPrice,
+                isNecklaceCategory(product.category),
+              );
             // Preflight aggregated requirements, including repeated beads at different positions.
             for (const [subCategoryId, requestedQuantity] of quantities) {
               const component = product.items.find(
@@ -385,6 +411,16 @@ export class OrdersService {
               copies.set(source, key);
               return key;
             };
+            // A gift's packaging (and colour) is part of what is ordered: one is taken from
+            // stock now, inside this transaction, and its name, colour and photo are frozen.
+            const packaging =
+              !company && product.giftPackagingId
+                ? await takeGiftPackagingStock(
+                    tx,
+                    product.giftPackagingId,
+                    product.giftPackagingColorId,
+                  )
+                : null;
             const previewKey = await copyImage(product.designPreviewKey);
             const backPreviewKey = await copyImage(
               product.backDesignPreviewKey,
@@ -409,6 +445,27 @@ export class OrdersService {
               designPreviewKey: previewKey,
               backDesignPreviewKey: backPreviewKey,
               basePrice: product.basePrice ?? 0,
+              packagingPrice: product.packagingPrice ?? 0,
+              giftPackaging: packaging
+                ? {
+                    id: packaging.id,
+                    name: packaging.name,
+                    description: packaging.description,
+                    type: packaging.type,
+                    shape: packaging.shape,
+                    imageKey: await copyImage(packaging.imageKey),
+                    price: packaging.price,
+                  }
+                : null,
+              giftPackagingColor: packaging?.color
+                ? {
+                    id: packaging.color.id,
+                    name: packaging.color.name,
+                    hex: packaging.color.hex,
+                    imageKey: await copyImage(packaging.color.imageKey),
+                    priceAdjustment: packaging.color.priceAdjustment,
+                  }
+                : null,
               price: totalPrice,
               // The exact piece a design is made on, frozen for order history and
               // production: its images and print areas reproduce placements in cm.
@@ -455,6 +512,7 @@ export class OrdersService {
                   color: string | null;
                   type: string | null;
                   price: number;
+                  effectiveLengthMm: number | null;
                 };
               }[],
             };
@@ -483,6 +541,8 @@ export class OrdersService {
                   color: component.color,
                   type: component.type,
                   price: component.price,
+                  // Production threads the piece from these sizes.
+                  effectiveLengthMm: component.effectiveLengthMm,
                 },
               });
             }

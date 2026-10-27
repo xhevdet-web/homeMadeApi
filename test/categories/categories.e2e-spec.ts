@@ -280,6 +280,152 @@ describe('Categories and SubCategories HTTP CRUD', () => {
     expect(category.update).not.toHaveBeenCalled();
   });
 
+  describe('jewelry sizes and component physical sizes', () => {
+    const bracelet = {
+      id,
+      name: 'Bracelet',
+      builderType: 'JEWELRY',
+      builderConfig: null,
+    };
+    const medium = {
+      id: 'medium',
+      name: 'Medium',
+      minMeasurementMm: 180,
+      maxMeasurementMm: 240,
+      defaultMeasurementMm: 200,
+    };
+
+    it('stores bracelet sizes as length ranges and drops legacy fields', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/categories')
+        .send({
+          name: 'Bracelet',
+          builderType: 'JEWELRY',
+          sizes: [{ ...medium, maxItems: 32 }],
+        })
+        .expect(201);
+      expect(category.create.mock.calls[0][0].data.sizes).toEqual([medium]);
+    });
+
+    it.each([
+      [[size]],
+      [[{ ...medium, maxMeasurementMm: 170 }]],
+      [[{ ...medium, defaultMeasurementMm: 260 }]],
+      [[{ ...medium, minMeasurementMm: 18.5 }]],
+    ])(
+      'rejects bracelet sizes that are not valid length ranges %j',
+      async (sizes) => {
+        category.findUnique.mockResolvedValue({
+          ...bracelet,
+          subCategories: [],
+        });
+        await request(app.getHttpServer())
+          .post('/api/v1/categories')
+          .send({ name: 'Bracelet', builderType: 'JEWELRY', sizes })
+          .expect(400);
+        // An update takes the studio from the stored category when the request omits it.
+        await request(app.getHttpServer())
+          .patch('/api/v1/categories/' + id)
+          .send({ sizes })
+          .expect(400);
+        expect(category.create).not.toHaveBeenCalled();
+        expect(category.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('sizes necklaces by length too, and keeps other studios in the legacy shape', async () => {
+      const necklace = {
+        ...medium,
+        minMeasurementMm: 400,
+        maxMeasurementMm: 600,
+        defaultMeasurementMm: 450,
+      };
+      await request(app.getHttpServer())
+        .post('/api/v1/categories')
+        .send({
+          name: 'Necklace',
+          builderType: 'JEWELRY',
+          builderConfig: { silhouette: 'NECKLACE' },
+          sizes: [necklace],
+        })
+        .expect(201);
+      expect(category.create.mock.calls[0][0].data.sizes).toEqual([necklace]);
+      await request(app.getHttpServer())
+        .post('/api/v1/categories')
+        .send({ name: 'Necklace', builderType: 'JEWELRY', sizes: [size] })
+        .expect(400);
+      await request(app.getHttpServer())
+        .post('/api/v1/categories')
+        .send({ name: 'Sized', sizes: [size] })
+        .expect(201);
+    });
+
+    it('requires a physical size for new jewelry components only', async () => {
+      category.findUnique.mockResolvedValue(bracelet);
+      const component = {
+        categoryId: id,
+        name: 'Black Onyx',
+        price: 20,
+        stock: 500,
+      };
+      await request(app.getHttpServer())
+        .post('/api/v1/sub-categories')
+        .send(component)
+        .expect(400);
+      await request(app.getHttpServer())
+        .post('/api/v1/sub-categories')
+        .send({ ...component, effectiveLengthMm: 8.5 })
+        .expect(400);
+      await request(app.getHttpServer())
+        .post('/api/v1/sub-categories')
+        .send({ ...component, effectiveLengthMm: 8 })
+        .expect(201);
+      expect(subCategory.create.mock.calls[0][0].data).toMatchObject({
+        effectiveLengthMm: 8,
+      });
+      // Necklace components are measured as well.
+      category.findUnique.mockResolvedValue({
+        id,
+        name: 'Necklace',
+        builderType: 'JEWELRY',
+      });
+      await request(app.getHttpServer())
+        .post('/api/v1/sub-categories')
+        .send({ ...component, name: 'Pearl' })
+        .expect(400);
+      category.findUnique.mockResolvedValue({
+        id,
+        name: 'Gifts',
+        builderType: 'GIFT',
+      });
+      await request(app.getHttpServer())
+        .post('/api/v1/sub-categories')
+        .send({ ...component, name: 'Mug' })
+        .expect(201);
+    });
+
+    it('lets unmeasured bracelet components be edited, but never loses a size', async () => {
+      subCategory.findUnique.mockResolvedValue({
+        ...child,
+        effectiveLengthMm: null,
+        category: bracelet,
+      });
+      // Existing components are measured over time: other edits still work meanwhile.
+      await request(app.getHttpServer())
+        .patch('/api/v1/sub-categories/' + childId)
+        .send({ stock: 40 })
+        .expect(200);
+      await request(app.getHttpServer())
+        .patch('/api/v1/sub-categories/' + childId)
+        .send({ effectiveLengthMm: 10 })
+        .expect(200);
+      await request(app.getHttpServer())
+        .patch('/api/v1/sub-categories/' + childId)
+        .send({ effectiveLengthMm: null })
+        .expect(400);
+    });
+  });
+
   it.each(['categories', 'sub-categories'])(
     'serves CRUD for %s under /api/v1',
     async (route) => {
@@ -434,9 +580,10 @@ describe('Categories and SubCategories HTTP CRUD', () => {
       .patch('/api/v1/sub-categories/' + childId)
       .send({ categoryId: id })
       .expect(200);
+    // The parent's studio decides whether the component needs a physical size.
     expect(category.findUnique).toHaveBeenCalledWith({
       where: { id },
-      select: { id: true },
+      select: { id: true, name: true, builderType: true, builderConfig: true },
     });
     expect(subCategory.update.mock.calls[0][0]).toMatchObject({
       data: { categoryId: id },

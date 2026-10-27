@@ -13,6 +13,10 @@ import { Prisma } from '../../generated/prisma/client.js';
 import type { CreateCategoryDto } from './dto/create-category.dto.js';
 import type { UpdateCategoryDto } from './dto/update-category.dto.js';
 import { validateBuilderConfig } from './builder-config.js';
+import {
+  isJewelryCategory,
+  normalizeCategorySizes,
+} from './jewelry-measurement.js';
 
 const orderBy = [
   { sortOrder: 'asc' },
@@ -42,14 +46,10 @@ export class CategoriesService {
             sizes:
               dto.sizes === null
                 ? Prisma.DbNull
-                : dto.sizes?.map(
-                    ({ id, name, measurement, unit, maxItems }) => ({
-                      id,
-                      name,
-                      measurement,
-                      unit,
-                      maxItems,
-                    }),
+                : dto.sizes &&
+                  normalizeCategorySizes(
+                    dto.sizes as unknown as Record<string, unknown>[],
+                    isJewelryCategory(dto),
                   ),
             name: dto.name,
             description: dto.description,
@@ -154,7 +154,7 @@ export class CategoriesService {
 
   async update(id: string, dto: UpdateCategoryDto, file?: Express.Multer.File) {
     await this.validateDesignLibrary(id, dto.designCategoryId);
-    const previous = file ? await this.findOne(id) : undefined;
+    const previous = file || dto.sizes ? await this.findOne(id) : undefined;
     const updated = await this.images.save(file, 'categories', async (key) => ({
       result: await this.query(() =>
         this.prisma.category.update({
@@ -169,16 +169,19 @@ export class CategoriesService {
               dto.builderConfig === null
                 ? Prisma.DbNull
                 : validateBuilderConfig(dto.builderConfig),
+            // Jewelry sizes are length ranges; the studio may come from the request or,
+            // when it leaves the studio out, from the stored category.
             sizes:
               dto.sizes === null
                 ? Prisma.DbNull
-                : dto.sizes?.map(
-                    ({ id, name, measurement, unit, maxItems }) => ({
-                      id,
-                      name,
-                      measurement,
-                      unit,
-                      maxItems,
+                : dto.sizes &&
+                  normalizeCategorySizes(
+                    dto.sizes as unknown as Record<string, unknown>[],
+                    isJewelryCategory({
+                      builderType:
+                        dto.builderType !== undefined
+                          ? dto.builderType
+                          : previous?.builderType,
                     }),
                   ),
             name: dto.name,

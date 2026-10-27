@@ -104,11 +104,31 @@ export class CreateProductDto {
   @IsUUID()
   baseProductId?: string;
 
+  /** GIFT designs: the packaging the gift arrives in; priced from the database. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsUUID()
+  giftPackagingId?: string;
+
+  /** A colour of the chosen closed packaging; never sent for transparent packaging. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsUUID()
+  giftPackagingColorId?: string;
+
   /** A size of the base product, or of the category's studio size presets. */
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsString()
   @Length(1, 200)
   selectedSizeId?: string;
+
+  /**
+   * Bracelet sizes are length ranges: the exact length chosen within the selected size, in
+   * whole millimetres (20 cm = 200).
+   */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  selectedMeasurementMm?: number;
 
   /** Personalised text for GIFT designs; null clears it on update. */
   @ValidateIf(

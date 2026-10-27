@@ -29,6 +29,7 @@ export const productItemsSelect = {
         color: true,
         type: true,
         price: true,
+        effectiveLengthMm: true,
       },
     },
   },

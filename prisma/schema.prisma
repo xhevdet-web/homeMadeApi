@@ -40,6 +40,19 @@ enum PaymentStatus {
   REFUNDED
 }
 
+// How a gift arrives: a see-through container, or a closed one (box, bag) chosen in a colour.
+enum GiftPackagingType {
+  TRANSPARENT
+  OPAQUE
+}
+
+// The outline of the packaging: it decides the box drawn in the Gift Studio and the space
+// pieces can be arranged in. Square and rectangular boxes are different physical stock.
+enum GiftPackagingShape {
+  SQUARE
+  RECTANGULAR
+}
+
 model User {
   id           String  @id @default(uuid())
   firstName    String  @map("first_name")
@@ -77,8 +90,10 @@ model Category {
   builderType   String? @map("builder_type")
   // Studio-wide settings, e.g. { "silhouette": "NECKLACE" } or { "silhouette": "HOODIE" }.
   builderConfig Json?   @map("builder_config")
-  // Studio size presets for strand builders: [{ id, name, measurement, unit, maxItems }].
-  // A design constraint, not inventory.
+  // Studio size presets for jewelry. A design constraint, not inventory. Length ranges in
+  // millimetres: [{ id, name, minMeasurementMm, maxMeasurementMm, defaultMeasurementMm }].
+  // Sizes saved before (not yet converted) keep the legacy [{ id, name, measurement, unit,
+  // maxItems }] and work as before.
   sizes         Json?
 
   // Shared design library: a category may also offer the designs (SubCategories) of
@@ -121,9 +136,12 @@ model SubCategory {
   // 1500 = €15.00
   price Int @default(0)
 
-  stock      Int     @default(0)
+  stock             Int     @default(0)
+  // Jewelry components: the length one piece occupies on the cord, in whole millimetres (an
+  // 8 mm round bead is 8). Null until the admin enters it; other studios leave it empty.
+  effectiveLengthMm Int?    @map("effective_length_mm")
   // Printed designs are unlimited; physical items (beads, patches) track stock.
-  trackStock Boolean @default(true) @map("track_stock")
+  trackStock        Boolean @default(true) @map("track_stock")
 
   isActive  Boolean @default(true) @map("is_active")
   sortOrder Int     @default(0) @map("sort_order")
@@ -145,29 +163,29 @@ model Product {
   origin ProductOrigin @default(CUSTOMER)
 
   // Every Product belongs to exactly one Category.
-  categoryId  String @map("category_id")
+  categoryId    String  @map("category_id")
   // The admin (COMPANY) or customer (CUSTOMER) who created the product.
-  createdById String @map("created_by_id")
+  createdById   String  @map("created_by_id")
   // CUSTOMER designs made on a COMPANY product, e.g. a design printed on
   // "Black Essential Hoodie". Null for designs built only from components.
   baseProductId String? @map("base_product_id")
 
-  name             String
-  description      String?
+  name                 String
+  description          String?
   // Catalog photo; for APPAREL it is also the studio canvas (front).
-  imageKey         String? @map("image_key")
+  imageKey             String? @map("image_key")
   // Optional back canvas for two-sided studios (APPAREL).
-  backImageKey     String? @map("back_image_key")
-  designPreviewKey String? @map("design_preview_key")
+  backImageKey         String? @map("back_image_key")
+  designPreviewKey     String? @map("design_preview_key")
   // Second preview for two-sided designs (APPAREL back).
   backDesignPreviewKey String? @map("back_design_preview_key")
 
   // COMPANY apparel: one Product is one colour, e.g. "Black" / "#111111".
-  color    String?
-  colorHex String? @map("color_hex")
+  color      String?
+  colorHex   String? @map("color_hex")
   // Printable areas as fractions of imageKey/backImageKey, with the real print size:
   // { "front": { x, y, width, height, widthCm?, heightCm? }, "back": { ... } }
-  printAreas Json? @map("print_areas")
+  printAreas Json?   @map("print_areas")
 
   // COMPANY inventory. Sized products track stock per size and leave `stock` at 0:
   // [{ "size": "S", "stock": 20 }, { "size": "M", "stock": 28 }]
@@ -183,11 +201,18 @@ model Product {
   // CUSTOMER: snapshot of the base product's price in cents, added to the component total.
   basePrice Int @default(0) @map("base_price")
 
+  // CUSTOMER GIFT designs: the packaging around the contents and, for closed packaging,
+  // its colour. Null for every other studio.
+  giftPackagingId      String? @map("gift_packaging_id")
+  giftPackagingColorId String? @map("gift_packaging_color_id")
+  // Snapshot in cents of the packaging price plus the colour's adjustment, like basePrice.
+  packagingPrice       Int     @default(0) @map("packaging_price")
+
   // Total number of components used, calculated from ProductItems.
   itemCount Int @default(0) @map("item_count")
 
-  // Price in cents. COMPANY: set by the admin. CUSTOMER: basePrice plus
-  // SUM(ProductItem.quantity * ProductItem.unitPrice).
+  // Price in cents. COMPANY: set by the admin. CUSTOMER: basePrice plus packagingPrice
+  // plus SUM(ProductItem.quantity * ProductItem.unitPrice).
   price Int @default(0)
 
   isActive Boolean @default(true) @map("is_active")
@@ -196,10 +221,13 @@ model Product {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  createdBy       User      @relation(fields: [createdById], references: [id])
-  category        Category  @relation(fields: [categoryId], references: [id])
-  baseProduct     Product?  @relation("ProductBase", fields: [baseProductId], references: [id], onDelete: NoAction)
-  derivedProducts Product[] @relation("ProductBase")
+  createdBy          User                @relation(fields: [createdById], references: [id])
+  category           Category            @relation(fields: [categoryId], references: [id])
+  baseProduct        Product?            @relation("ProductBase", fields: [baseProductId], references: [id], onDelete: NoAction)
+  derivedProducts    Product[]           @relation("ProductBase")
+  // Restrict: packaging used by a design is deactivated, never deleted.
+  giftPackaging      GiftPackaging?      @relation(fields: [giftPackagingId], references: [id], onDelete: Restrict)
+  giftPackagingColor GiftPackagingColor? @relation(fields: [giftPackagingColorId], references: [id], onDelete: Restrict)
 
   // Components used in a CUSTOMER design.
   items ProductItem[]
@@ -209,8 +237,66 @@ model Product {
   @@index([createdById])
   @@index([categoryId, origin])
   @@index([baseProductId])
+  @@index([giftPackagingId])
+  @@index([giftPackagingColorId])
   @@index([isActive])
   @@map("products")
+}
+
+// Packaging a GIFT design arrives in, e.g. "Transparent Box" or "Classic Closed Box". It is
+// not a component: it is never placed on the canvas, it surrounds what is.
+model GiftPackaging {
+  id          String             @id @default(uuid())
+  name        String             @unique
+  description String?
+  type        GiftPackagingType
+  shape       GiftPackagingShape @default(SQUARE)
+  imageKey    String?            @map("image_key")
+
+  // Price in cents, e.g. 400 = €4.00.
+  price Int @default(0)
+  // Inventory of packaging without colours (TRANSPARENT). Packaging with colours keeps
+  // its stock per colour instead.
+  stock Int @default(0)
+
+  isActive  Boolean @default(true) @map("is_active")
+  sortOrder Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  colors   GiftPackagingColor[]
+  products Product[]
+
+  @@index([isActive])
+  @@map("gift_packaging")
+}
+
+// A colour of OPAQUE packaging, e.g. "Pink" / "#E8B4BC", with its own stock.
+model GiftPackagingColor {
+  id          String  @id @default(uuid())
+  packagingId String  @map("packaging_id")
+  name        String
+  hex         String
+  // Optional photo of the packaging in this colour.
+  imageKey    String? @map("image_key")
+
+  // Added to the packaging price, in cents.
+  priceAdjustment Int @default(0) @map("price_adjustment")
+  stock           Int @default(0)
+
+  isActive  Boolean @default(true) @map("is_active")
+  sortOrder Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  packaging GiftPackaging @relation(fields: [packagingId], references: [id], onDelete: Cascade)
+  products  Product[]
+
+  @@unique([packagingId, name])
+  @@index([packagingId])
+  @@map("gift_packaging_colors")
 }
 
 model ProductItem {

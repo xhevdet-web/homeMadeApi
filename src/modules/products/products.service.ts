@@ -20,13 +20,31 @@ import {
   baseProductSelect,
   productItemsSelect,
 } from './product-items.select.js';
-import { normalizeSizes, parseSizes, type SizeStock } from './product-sizes.js';
+import {
+  normalizeSizes,
+  parseSizes,
+  selectedSizeId,
+  type SizeStock,
+} from './product-sizes.js';
 import { validatePrintAreas } from './print-area.js';
+import {
+  assertNotOverfilled,
+  measuredSize,
+  selectedMeasuredSize,
+  selectMeasurement,
+  usedLengthMm,
+  type Piece,
+} from '../categories/jewelry-measurement.js';
 import {
   isCanvasBuilder,
   TEXT_BUILDERS,
 } from '../categories/builder-config.js';
 import type { TextLayerDto } from './dto/text-layer.dto.js';
+import {
+  giftPackagingColorSelect,
+  giftPackagingFields,
+  giftPackagingSelect,
+} from '../gift-packaging/gift-packaging.selection.js';
 
 // The "Your own design" SubCategory: the customer uploads the image and its price is
 // charged once per design, however many own images are placed.
@@ -50,6 +68,8 @@ const productInclude = {
     },
   },
   baseProduct: { select: baseProductSelect },
+  giftPackaging: { select: giftPackagingSelect },
+  giftPackagingColor: { select: giftPackagingColorSelect },
   items: productItemsSelect,
 } satisfies Prisma.ProductInclude;
 
@@ -143,7 +163,16 @@ export class ProductsService {
               ? undefined
               : await this.resolveBaseProduct(tx, category, dto.baseProductId);
             const basePrice = base?.price ?? 0;
-            if (calculated.price + basePrice > 2147483647)
+            const packaging = await giftPackagingFields(
+              tx,
+              { builderType: category.builderType, company },
+              dto.giftPackagingId,
+              dto.giftPackagingColorId,
+            );
+            if (
+              calculated.price + basePrice + packaging.packagingPrice >
+              2147483647
+            )
               throw new BadRequestException(
                 'Product quantity or price exceeds the supported integer range',
               );
@@ -155,8 +184,14 @@ export class ProductsService {
                     tx,
                     dto.categoryId,
                     dto.selectedSizeId,
-                    calculated.itemCount,
+                    dto.items ?? [],
+                    dto.selectedMeasurementMm,
                   );
+            if (
+              dto.selectedMeasurementMm !== undefined &&
+              dto.selectedSizeId === undefined
+            )
+              throw new BadRequestException('Choose a size for the length');
             return tx.product.create({
               data: {
                 origin: dto.origin ?? 'CUSTOMER',
@@ -178,8 +213,11 @@ export class ProductsService {
                 sizes: inventory?.sizes ?? undefined,
                 stock: inventory?.stock ?? 0,
                 basePrice,
+                ...packaging,
                 isActive: dto.isActive,
-                price: company ? dto.price : calculated.price + basePrice,
+                price: company
+                  ? dto.price
+                  : calculated.price + basePrice + packaging.packagingPrice,
                 itemCount: calculated.itemCount,
                 items: { create: calculated.items },
               },
@@ -397,6 +435,7 @@ export class ProductsService {
               if (
                 dto.items !== undefined ||
                 dto.selectedSizeId !== undefined ||
+                dto.selectedMeasurementMm !== undefined ||
                 dto.textLayers !== undefined ||
                 (dto.categoryId !== undefined &&
                   dto.categoryId !== product.categoryId)
@@ -428,8 +467,11 @@ export class ProductsService {
                 items,
               );
               data.category = { connect: { id: categoryId } };
-              // The base product price was snapshotted when the design was created.
-              data.price = calculated.price + (product.basePrice ?? 0);
+              // Base product and packaging prices were snapshotted when the design was created.
+              data.price =
+                calculated.price +
+                (product.basePrice ?? 0) +
+                (product.packagingPrice ?? 0);
               data.itemCount = calculated.itemCount;
               data.items = { deleteMany: {}, create: calculated.items };
             }
@@ -445,15 +487,26 @@ export class ProductsService {
                 { name: base.name, sizes: baseSizes },
                 dto.selectedSizeId,
               );
-            } else if (dto.selectedSizeId !== undefined) {
+            } else if (
+              dto.selectedSizeId !== undefined ||
+              dto.selectedMeasurementMm !== undefined
+            ) {
+              // A new length alone keeps the stored size; a new size alone keeps the
+              // stored length only when it still belongs to that size.
+              const stored = selectedMeasuredSize(product.selectedSize);
+              const sizeId =
+                dto.selectedSizeId ?? selectedSizeId(product.selectedSize);
+              if (!sizeId)
+                throw new BadRequestException('Choose a size for the length');
               data.selectedSize = await this.resolveSize(
                 tx,
                 dto.categoryId ?? product.categoryId,
-                dto.selectedSizeId,
-                (dto.items ?? product.items).reduce(
-                  (sum, item) => sum + item.quantity,
-                  0,
-                ),
+                sizeId,
+                dto.items ?? product.items,
+                dto.selectedMeasurementMm ??
+                  (stored?.id === sizeId
+                    ? stored.selectedMeasurementMm
+                    : undefined),
               );
             } else if (
               !base &&
@@ -465,12 +518,10 @@ export class ProductsService {
                 select: { sizes: true },
               });
               if (Array.isArray(category?.sizes) && category.sizes.length > 0)
-                this.validateSizeLimit(
+                await this.validateStoredSize(
+                  tx,
                   product.selectedSize,
-                  (dto.items ?? product.items).reduce(
-                    (sum, item) => sum + item.quantity,
-                    0,
-                  ),
+                  dto.items ?? product.items,
                 );
             }
             return tx.product.update({
@@ -589,11 +640,18 @@ export class ProductsService {
     );
   }
 
+  /**
+   * The category size a design is made in, as the snapshot to store. Jewelry sizes are
+   * length ranges: the customer's exact length must lie within it, and the components may
+   * not measure longer (a design may be unfinished; orders need the minimum price). Legacy
+   * sizes keep their component-count limit.
+   */
   private async resolveSize(
     tx: Prisma.TransactionClient,
     categoryId: string,
     sizeId: string,
-    itemCount: number,
+    items: { subCategoryId: string; quantity: number }[],
+    selectedMeasurementMm?: number,
   ) {
     const category = await tx.category.findUnique({
       where: { id: categoryId },
@@ -613,8 +671,71 @@ export class ProductsService {
       throw new BadRequestException(
         'Selected size does not exist in the selected category',
       );
-    this.validateSizeLimit(size, itemCount);
+    const measured = measuredSize(size);
+    if (measured) {
+      const selected = selectMeasurement(measured, selectedMeasurementMm);
+      assertNotOverfilled(
+        usedLengthMm(await this.piecesOf(tx, items)),
+        selected.selectedMeasurementMm,
+      );
+      return selected as unknown as Prisma.InputJsonObject;
+    }
+    if (selectedMeasurementMm !== undefined)
+      throw new BadRequestException(
+        'This size has no adjustable length; it is set by its number of components',
+      );
+    this.validateSizeLimit(
+      size,
+      items.reduce((sum, item) => sum + item.quantity, 0),
+    );
     return size as Prisma.InputJsonObject;
+  }
+
+  /** Checks changed components against the design's stored size (length or count). */
+  private async validateStoredSize(
+    tx: Prisma.TransactionClient,
+    stored: Prisma.JsonValue | null,
+    items: { subCategoryId: string; quantity: number }[],
+  ) {
+    const measured = selectedMeasuredSize(stored);
+    if (measured)
+      assertNotOverfilled(
+        usedLengthMm(await this.piecesOf(tx, items)),
+        measured.selectedMeasurementMm,
+      );
+    else
+      this.validateSizeLimit(
+        stored ?? undefined,
+        items.reduce((sum, item) => sum + item.quantity, 0),
+      );
+  }
+
+  /** Each item with its component's physical length, read from the database. */
+  private async piecesOf(
+    tx: Prisma.TransactionClient,
+    items: { subCategoryId: string; quantity: number }[],
+  ): Promise<Piece[]> {
+    const components = await tx.subCategory.findMany({
+      where: {
+        id: { in: [...new Set(items.map((item) => item.subCategoryId))] },
+      },
+      select: { id: true, name: true, effectiveLengthMm: true },
+    });
+    const byId = new Map(
+      components.map((component) => [component.id, component]),
+    );
+    return items.map((item) => {
+      const component = byId.get(item.subCategoryId);
+      if (!component)
+        throw new NotFoundException(
+          'SubCategory not found: ' + item.subCategoryId,
+        );
+      return {
+        name: component.name,
+        quantity: item.quantity,
+        effectiveLengthMm: component.effectiveLengthMm,
+      };
+    });
   }
 
   private async categoryConfiguration(

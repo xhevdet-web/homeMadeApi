@@ -50,7 +50,14 @@ class MultipartFieldsInterceptor implements NestInterceptor {
     // Preserve strict JSON DTO validation. Only multipart transports numbers/booleans as text.
     if (request.is('multipart/form-data')) {
       const body = request.body as Record<string, unknown>;
-      for (const field of ['price', 'stock', 'sortOrder']) {
+      for (const field of [
+        'price',
+        'stock',
+        'sortOrder',
+        'priceAdjustment',
+        'effectiveLengthMm',
+        'selectedMeasurementMm',
+      ]) {
         const value = body[field];
         if (typeof value === 'string' && /^-?\d+$/.test(value))
           body[field] = Number(value);
@@ -80,9 +87,16 @@ class MultipartFieldsInterceptor implements NestInterceptor {
 }
 
 export function ImageUpload(
-  entity: 'category' | 'subCategory' | 'product',
+  entity:
+    | 'category'
+    | 'subCategory'
+    | 'product'
+    | 'giftPackaging'
+    | 'giftPackagingColor',
   update = false,
 ) {
+  const packaging =
+    entity === 'giftPackaging' || entity === 'giftPackagingColor';
   const properties: Record<string, object> = {
     name: { type: 'string', minLength: 1, maxLength: 200 },
     description: { type: 'string', nullable: true },
@@ -153,8 +167,48 @@ export function ImageUpload(
       nullable: true,
       oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'object' } }],
     };
+    properties.giftPackagingId = {
+      type: 'string',
+      format: 'uuid',
+      description:
+        'CUSTOMER GIFT only: the packaging the gift arrives in. Its price comes from the database.',
+    };
+    properties.giftPackagingColorId = {
+      type: 'string',
+      format: 'uuid',
+      description:
+        'A colour of the chosen closed packaging; required when it has colours, never for transparent packaging.',
+    };
   }
-  if (entity !== 'category')
+  if (entity === 'giftPackaging')
+    Object.assign(properties, {
+      type: { type: 'string', enum: ['TRANSPARENT', 'OPAQUE'] },
+      shape: {
+        type: 'string',
+        enum: ['SQUARE', 'RECTANGULAR'],
+        description:
+          'Defaults to SQUARE; decides the box drawn in the Gift Studio.',
+      },
+      price: { type: 'integer', minimum: 0, description: 'Price in cents' },
+      stock: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Stock of packaging without colours.',
+      },
+    });
+  if (entity === 'giftPackagingColor') {
+    delete properties.description;
+    Object.assign(properties, {
+      hex: { type: 'string', example: '#E8B4BC' },
+      priceAdjustment: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Added to the packaging price, in cents',
+      },
+      stock: { type: 'integer', minimum: 0 },
+    });
+  }
+  if (entity !== 'category' && !packaging)
     properties.categoryId = { type: 'string', format: 'uuid' };
   if (entity !== 'product')
     properties.sortOrder = { type: 'integer', minimum: 0 };
@@ -168,6 +222,13 @@ export function ImageUpload(
         description: 'Price per component in cents',
       },
       stock: { type: 'integer', minimum: 0 },
+      effectiveLengthMm: {
+        type: 'integer',
+        minimum: 1,
+        nullable: true,
+        description:
+          'Jewelry components: length one piece occupies on the cord, in millimetres. Required for new jewelry components.',
+      },
       trackStock: {
         type: 'boolean',
         description:
@@ -307,7 +368,11 @@ export function ImageUpload(
         properties,
         required: update
           ? []
-          : ['name', ...(entity !== 'category' ? ['categoryId'] : [])],
+          : entity === 'giftPackaging'
+            ? ['name', 'type']
+            : entity === 'giftPackagingColor'
+              ? ['name', 'hex']
+              : ['name', ...(entity !== 'category' ? ['categoryId'] : [])],
       },
     }),
     UseFilters(UploadSizeFilter),

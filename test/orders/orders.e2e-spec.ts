@@ -8,7 +8,11 @@ import { PrismaService } from '../../src/database/prisma.service.js';
 import { Prisma } from '../../src/generated/prisma/client.js';
 import { setupApp } from '../../src/config/setup-app.js';
 import { StorageService } from '../../src/storage/storage.service.js';
-import { fakeTransport, testMailConfig, withFakeMail } from '../mail/fake-mail.js';
+import {
+  fakeTransport,
+  testMailConfig,
+  withFakeMail,
+} from '../mail/fake-mail.js';
 
 const dbError = (code: string) =>
   new Prisma.PrismaClientKnownRequestError('Private SQL and credentials', {
@@ -201,8 +205,10 @@ describe('Orders HTTP', () => {
 
   /** Serves each product by id, as the ordered product, its base and the size re-read. */
   const products = (...records: ({ id: string } & Record<string, unknown>)[]) =>
-    product.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) =>
-      records.find((entry) => entry.id === where.id) ?? null);
+    product.findUnique.mockImplementation(
+      async ({ where }: { where: { id: string } }) =>
+        records.find((entry) => entry.id === where.id) ?? null,
+    );
 
   it("orders another admin's company product at the admin price without consuming components", async () => {
     product.findUnique.mockResolvedValue({
@@ -228,13 +234,23 @@ describe('Orders HTTP', () => {
     expect(subCategory.updateMany).not.toHaveBeenCalled();
     expect(order.create.mock.calls[0][0].data).toMatchObject({
       totalPrice: 4500,
-      designSnapshot: { version: 2, product: { origin: 'COMPANY', price: 4500 } },
+      designSnapshot: {
+        version: 2,
+        product: { origin: 'COMPANY', price: 4500 },
+      },
     });
   });
 
   const baseId = 'c7d1f0a4-2a71-46c6-bfba-a453d847044f';
   const printAreas = {
-    front: { x: 0.3, y: 0.28, width: 0.4, height: 0.42, widthCm: 30, heightCm: 40 },
+    front: {
+      x: 0.3,
+      y: 0.28,
+      width: 0.4,
+      height: 0.42,
+      widthCm: 30,
+      heightCm: 40,
+    },
   };
   // Black Essential Hoodie: one colour, one price, stock per size.
   const hoodie = (overrides: object = {}) => ({
@@ -269,7 +285,8 @@ describe('Orders HTTP', () => {
     category: { ...productRecord.category, builderType: 'APPAREL' },
     ...overrides,
   });
-  const sizesWritten = () => product.update.mock.calls.map(([call]) => call.data.sizes);
+  const sizesWritten = () =>
+    product.update.mock.calls.map(([call]) => call.data.sizes);
 
   it('orders a sized company product in the chosen size, decrementing only that size', async () => {
     products(hoodie({ id: productId }));
@@ -284,7 +301,11 @@ describe('Orders HTTP', () => {
     expect(order.create.mock.calls[0][0].data).toMatchObject({
       totalPrice: 3500,
       designSnapshot: {
-        product: { origin: 'COMPANY', selectedSize: { id: 'L', name: 'L' }, color: 'Black' },
+        product: {
+          origin: 'COMPANY',
+          selectedSize: { id: 'L', name: 'L' },
+          color: 'Black',
+        },
       },
     });
   });
@@ -293,16 +314,28 @@ describe('Orders HTTP', () => {
     [undefined, 'Choose a size of Black Essential Hoodie'],
     ['XL', 'Black Essential Hoodie in size XL is sold out'],
     ['XXL', 'Black Essential Hoodie is no longer available in size XXL'],
-  ])('rejects a company size %s that cannot be bought', async (size, message) => {
-    products(hoodie({ id: productId }));
-    const response = await post({ ...body, ...(size ? { size } : {}) }).expect(400);
-    expect(response.body.message).toBe(message);
-    expect(order.create).not.toHaveBeenCalled();
-    expect(product.update).not.toHaveBeenCalled();
-  });
+  ])(
+    'rejects a company size %s that cannot be bought',
+    async (size, message) => {
+      products(hoodie({ id: productId }));
+      const response = await post({
+        ...body,
+        ...(size ? { size } : {}),
+      }).expect(400);
+      expect(response.body.message).toBe(message);
+      expect(order.create).not.toHaveBeenCalled();
+      expect(product.update).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects a size for unsized products and for designs', async () => {
-    products({ ...productRecord, origin: 'COMPANY', createdBy: { role: 'ADMIN' }, isActive: true, stock: 3 });
+    products({
+      ...productRecord,
+      origin: 'COMPANY',
+      createdBy: { role: 'ADMIN' },
+      isActive: true,
+      stock: 3,
+    });
     await post({ ...body, size: 'L' }).expect(400);
     products(design(), hoodie());
     await post({ ...body, size: 'L' }).expect(400);
@@ -353,34 +386,60 @@ describe('Orders HTTP', () => {
   it('rejects a design whose base size sold out', async () => {
     products(design({ selectedSize: { id: 'XL', name: 'XL' } }), hoodie());
     const response = await post(body).expect(400);
-    expect(response.body.message).toBe('Black Essential Hoodie in size XL is sold out');
+    expect(response.body.message).toBe(
+      'Black Essential Hoodie in size XL is sold out',
+    );
     expect(product.update).not.toHaveBeenCalled();
   });
 
   it.each([
-    [{ baseProductId: null }, {}, 'Choose the piece to design on before ordering this design'],
+    [
+      { baseProductId: null },
+      {},
+      'Choose the piece to design on before ordering this design',
+    ],
     [{}, { isActive: false }, 'Black Essential Hoodie is no longer available'],
-    [{ selectedSize: null }, {}, 'Choose a size of Black Essential Hoodie before ordering this design'],
-  ])('rejects a design without an available base %j %j', async (designFields, baseFields, message) => {
-    products(design(designFields), hoodie(baseFields));
-    const response = await post(body).expect(400);
-    expect(response.body.message).toBe(message);
-    expect(order.create).not.toHaveBeenCalled();
-    expect(product.update).not.toHaveBeenCalled();
-  });
+    [
+      { selectedSize: null },
+      {},
+      'Choose a size of Black Essential Hoodie before ordering this design',
+    ],
+  ])(
+    'rejects a design without an available base %j %j',
+    async (designFields, baseFields, message) => {
+      products(design(designFields), hoodie(baseFields));
+      const response = await post(body).expect(400);
+      expect(response.body.message).toBe(message);
+      expect(order.create).not.toHaveBeenCalled();
+      expect(product.update).not.toHaveBeenCalled();
+    },
+  );
 
   it('never decrements unlimited printed designs', async () => {
-    products(design({
-      items: productRecord.items.map((item) => ({
-        ...item,
-        side: 'FRONT', x: 0.5, y: 0.4, scale: 1.2, rotation: 15,
-        subCategory: { ...item.subCategory, stock: 0, trackStock: false },
-      })),
-    }), hoodie());
+    products(
+      design({
+        items: productRecord.items.map((item) => ({
+          ...item,
+          side: 'FRONT',
+          x: 0.5,
+          y: 0.4,
+          scale: 1.2,
+          rotation: 15,
+          subCategory: { ...item.subCategory, stock: 0, trackStock: false },
+        })),
+      }),
+      hoodie(),
+    );
     await post(body).expect(201);
     expect(subCategory.updateMany).not.toHaveBeenCalled();
-    expect(order.create.mock.calls[0][0].data.designSnapshot.product.items[0]).toMatchObject({
-      side: 'FRONT', x: 0.5, y: 0.4, scale: 1.2, rotation: 15,
+    expect(
+      order.create.mock.calls[0][0].data.designSnapshot.product.items[0],
+    ).toMatchObject({
+      side: 'FRONT',
+      x: 0.5,
+      y: 0.4,
+      scale: 1.2,
+      rotation: 15,
     });
   });
 
@@ -416,7 +475,12 @@ describe('Orders HTTP', () => {
             size: 'XXL',
             colorName: 'Red',
             colorValue: '#FF0000',
-            garment: { id: otherId, name: 'Hoodie', frontImageKey: 'orders/x/front.png', frontPrintArea: printAreas.front },
+            garment: {
+              id: otherId,
+              name: 'Hoodie',
+              frontImageKey: 'orders/x/front.png',
+              frontPrintArea: printAreas.front,
+            },
           },
         },
       },
@@ -530,6 +594,7 @@ describe('Orders HTTP', () => {
         color: true,
         type: true,
         price: true,
+        effectiveLengthMm: true,
       });
       expect(JSON.stringify(select)).not.toContain('passwordHash');
     },
@@ -807,7 +872,11 @@ describe('Orders HTTP', () => {
   });
 
   describe('status emails', () => {
-    const customer = { ...account, email: 'kate@example.com', firstName: 'Kate' };
+    const customer = {
+      ...account,
+      email: 'kate@example.com',
+      firstName: 'Kate',
+    };
     const saved = (status: string) => ({
       ...record,
       status,
@@ -858,8 +927,10 @@ describe('Orders HTTP', () => {
       admin();
       order.update.mockResolvedValue(saved('ORDERED'));
       await patch('/payment-status', { paymentStatus: 'PAID' }).expect(200);
-      await patch('', { adminNotes: 'Packed', finalImageUrl: 'https://images.example.test/final.png' })
-        .expect(200);
+      await patch('', {
+        adminNotes: 'Packed',
+        finalImageUrl: 'https://images.example.test/final.png',
+      }).expect(200);
       expect(mail.sendMail).not.toHaveBeenCalled();
     });
 
@@ -867,13 +938,21 @@ describe('Orders HTTP', () => {
       admin();
       order.update.mockResolvedValue(saved('CREATING'));
       mail.sendMail.mockRejectedValue(
-        new Error('Invalid login: 535-5.7.8 Username and Password not accepted'),
+        new Error(
+          'Invalid login: 535-5.7.8 Username and Password not accepted',
+        ),
       );
-      const response = await patch('/status', { status: 'CREATING' }).expect(200);
+      const response = await patch('/status', { status: 'CREATING' }).expect(
+        200,
+      );
       expect(response.body.status).toBe('CREATING');
       expect(mail.sendMail).toHaveBeenCalledTimes(1);
-      expect(JSON.stringify(response.body)).not.toMatch(/535|Password not accepted/);
-      expect(JSON.stringify(response.body)).not.toContain(testMailConfig.password);
+      expect(JSON.stringify(response.body)).not.toMatch(
+        /535|Password not accepted/,
+      );
+      expect(JSON.stringify(response.body)).not.toContain(
+        testMailConfig.password,
+      );
     });
   });
 
