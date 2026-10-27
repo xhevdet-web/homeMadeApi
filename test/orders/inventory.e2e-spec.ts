@@ -15,7 +15,8 @@ import { PrismaService } from '../../src/database/prisma.service.js';
 import { ProductsService } from '../../src/modules/products/products.service.js';
 import { OrdersService } from '../../src/modules/orders/orders.service.js';
 import type { AuthenticatedUser } from '../../src/common/types/authenticated-user.type.js';
-import { fakeMailService } from '../mail/fake-mail.js';
+import { fakeOrderNotifications } from '../mail/fake-mail.js';
+import { NotificationsService } from '../../src/modules/notifications/notifications.service.js';
 
 // Opt in because these tests require PostgreSQL. Every write is in a disposable,
 // randomly named schema; existing application tables and records are never changed.
@@ -78,7 +79,9 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
         db as unknown as PrismaService,
         orderStorage,
         new ImageWriteService(orderStorage),
-        fakeMailService(),
+        fakeOrderNotifications(
+          new NotificationsService(db as unknown as PrismaService),
+        ),
       );
     }, 30000);
 
@@ -876,7 +879,9 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
         db as unknown as PrismaService,
         storage,
         new ImageWriteService(storage),
-        fakeMailService(),
+        fakeOrderNotifications(
+          new NotificationsService(db as unknown as PrismaService),
+        ),
       );
       await expect(
         service.create(
@@ -1142,6 +1147,64 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
       await expect(
         bracelet([{ subCategoryId: secondId, quantity: 1 }]),
       ).rejects.toThrow('Red bead does not have a physical size configured');
+    });
+    it('records in-app order updates for the owner as they happen, never twice, and respects the preference', async () => {
+      const order = await place((await design()).id);
+      const titles = async () =>
+        (
+          await db.notification.findMany({
+            where: { userId: customer.id },
+            select: { title: true },
+          })
+        )
+          .map((entry) => entry.title)
+          .sort();
+      // Placing an order: exactly one "Order received", about that order.
+      expect(await titles()).toEqual(['Order received']);
+      expect(
+        await db.notification.findFirst({ where: { userId: customer.id } }),
+      ).toMatchObject({
+        orderId: order.id,
+        type: 'ORDER_STATUS',
+        isRead: false,
+        message: `We’ve received your order ${order.orderNumber}.`,
+      });
+
+      const steps = [
+        ['CREATING', 'We’re creating your order'],
+        ['CREATED', 'Your order is ready'],
+        ['READY_FOR_COURIER', 'Ready for the courier'],
+      ] as const;
+      for (const [status, title] of steps) {
+        await orders.updateStatus(order.id, { status }, admin);
+        expect(await titles()).toContain(title);
+      }
+      expect(await db.notification.count()).toBe(4);
+      // The same status again is refused and adds nothing.
+      await expect(
+        orders.updateStatus(order.id, { status: 'READY_FOR_COURIER' }, admin),
+      ).rejects.toThrow();
+      expect(await db.notification.count()).toBe(4);
+
+      // Turned off: no new in-app notifications, and the history stays.
+      await db.user.update({
+        where: { id: customer.id },
+        data: { notificationsEnabled: false },
+      });
+      await orders.updateStatus(
+        order.id,
+        { status: 'PICKED_UP_BY_COURIER' },
+        admin,
+      );
+      expect(await db.notification.count()).toBe(4);
+      // Back on: the next real change is recorded again.
+      await db.user.update({
+        where: { id: customer.id },
+        data: { notificationsEnabled: true },
+      });
+      await orders.updateStatus(order.id, { status: 'COMPLETED' }, admin);
+      expect(await titles()).toContain('Order completed');
+      expect(await db.notification.count()).toBe(5);
     });
   },
 );

@@ -1,5 +1,5 @@
 import { Test } from '@nestjs/testing';
-import type { INestApplication } from '@nestjs/common';
+import { Logger, type INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
@@ -8,6 +8,7 @@ import { PrismaService } from '../../src/database/prisma.service.js';
 import { Prisma } from '../../src/generated/prisma/client.js';
 import { setupApp } from '../../src/config/setup-app.js';
 import { StorageService } from '../../src/storage/storage.service.js';
+import { ORDER_STATUS_COPY } from '../../src/mail/order-status-copy.js';
 import {
   fakeTransport,
   testMailConfig,
@@ -903,14 +904,18 @@ describe('Orders HTTP', () => {
         address: testMailConfig.from.address,
       });
       expect(message.subject).toBe(
-        'Your order is ready for delivery – #HM-2026-000000123',
+        'Your order HM-2026-000000123 is ready for the courier',
       );
       for (const content of [message.html, message.text]) {
         expect(content).toContain('Hi Kate,');
         expect(content).toContain('HM-2026-000000123');
         expect(content).toContain('My Hoodie');
-        expect(content).toContain('Ready for courier');
+        expect(content).toContain('Ready for the courier');
+        expect(content).toContain('€29.99');
         expect(content).not.toContain('READY_FOR_COURIER');
+        // Internal data never reaches the customer.
+        for (const internal of [id, userId, productId, 'Internal note'])
+          expect(content).not.toContain(internal);
       }
     });
 
@@ -953,6 +958,97 @@ describe('Orders HTTP', () => {
       expect(JSON.stringify(response.body)).not.toContain(
         testMailConfig.password,
       );
+    });
+
+    it.each(
+      workflow.slice(1).map((status, index) => [workflow[index], status]),
+    )('emails once for %s → %s', async (from, to) => {
+      admin();
+      order.findUnique.mockResolvedValue({ ...record, status: from });
+      order.update.mockResolvedValue(saved(to));
+      await patch('/status', { status: to }).expect(200);
+      expect(mail.sendMail).toHaveBeenCalledTimes(1);
+      const message = mail.sendMail.mock.calls[0][0];
+      const copy = ORDER_STATUS_COPY[to as keyof typeof ORDER_STATUS_COPY];
+      expect(message.to).toBe('kate@example.com');
+      expect(message.subject).toBe(copy.subject(record.orderNumber));
+      expect(message.text).toContain(copy.message);
+      expect(message.text).toContain(copy.label);
+    });
+
+    it('sends nothing when the requested status is the current one', async () => {
+      admin();
+      order.findUnique.mockResolvedValue({ ...record, status: 'CREATING' });
+      await patch('/status', { status: 'CREATING' }).expect(400);
+      expect(order.update).not.toHaveBeenCalled();
+      expect(mail.sendMail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('order confirmation email', () => {
+    const placed = (email = 'kate@example.com') => ({
+      ...record,
+      user: { ...account, email, firstName: 'Kate' },
+      product: { id: productId, name: 'My Bracelet' },
+    });
+
+    it('sends exactly one confirmation to the customer once the order is saved', async () => {
+      order.create.mockResolvedValue(placed());
+      await post(body).expect(201);
+      // One placement, one email: no separate "status changed" email for ORDERED.
+      expect(mail.sendMail).toHaveBeenCalledTimes(1);
+      const message = mail.sendMail.mock.calls[0][0];
+      expect(message.to).toBe('kate@example.com');
+      expect(message.subject).toBe('Order HM-2026-000000123 received');
+      for (const content of [message.html, message.text]) {
+        expect(content).toContain('Hi Kate,');
+        expect(content).toContain('Thank you for your order!');
+        expect(content).toContain(
+          'We’ve received your order HM-2026-000000123 and will start preparing it soon.',
+        );
+        expect(content).toContain('Order received');
+        expect(content).toContain('€29.99');
+        expect(content).toContain('My Bracelet');
+        expect(content).not.toContain('ORDERED');
+        expect(content).not.toContain('Internal note');
+      }
+      // The order is saved before anything is sent.
+      expect(order.create.mock.invocationCallOrder[0]).toBeLessThan(
+        mail.sendMail.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('keeps the order when the confirmation cannot be sent, without leaking SMTP details', async () => {
+      const warn = vi.spyOn(Logger.prototype, 'warn');
+      order.create.mockResolvedValue(placed());
+      mail.sendMail.mockRejectedValue(
+        new Error(
+          'Invalid login: 535-5.7.8 Username and Password not accepted',
+        ),
+      );
+      const response = await post(body).expect(201);
+      expect(response.body.orderNumber).toBe(record.orderNumber);
+      // Nothing was rolled back or retried because of the email.
+      expect(order.create).toHaveBeenCalledTimes(1);
+      expect(storage.delete).not.toHaveBeenCalled();
+      expect(JSON.stringify(response.body)).not.toMatch(
+        /535|Password not accepted/,
+      );
+      const logged = warn.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(logged).toContain('Failed to send order created email');
+      expect(logged).not.toContain(testMailConfig.password);
+      warn.mockRestore();
+    });
+
+    it('places the order without email when the customer has no valid address', async () => {
+      const warn = vi.spyOn(Logger.prototype, 'warn');
+      order.create.mockResolvedValue(placed(''));
+      await post(body).expect(201);
+      expect(mail.sendMail).not.toHaveBeenCalled();
+      expect(
+        warn.mock.calls.map((call) => String(call[0])).join('\n'),
+      ).toContain('email skipped');
+      warn.mockRestore();
     });
   });
 

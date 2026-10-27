@@ -7,7 +7,6 @@ import {
   Inject,
   Injectable,
   InternalServerErrorException,
-  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
@@ -33,7 +32,7 @@ import {
 } from '../categories/jewelry-measurement.js';
 import { StorageService } from '../../storage/storage.service.js';
 import { ImageWriteService } from '../../storage/image-write.service.js';
-import { MailService } from '../../mail/mail.service.js';
+import { OrderNotificationService } from './order-notification.service.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.type.js';
 import type { CreateOrderDto } from './dto/create-order.dto.js';
 import type { UpdateOrderDto } from './dto/update-order.dto.js';
@@ -162,13 +161,12 @@ function snapshotProduct(product: Record<string, unknown>) {
 
 @Injectable()
 export class OrdersService {
-  private readonly logger = new Logger(OrdersService.name);
-
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(StorageService) private readonly storage: StorageService,
     @Inject(ImageWriteService) private readonly images: ImageWriteService,
-    @Inject(MailService) private readonly mail: MailService,
+    @Inject(OrderNotificationService)
+    private readonly notifications: OrderNotificationService,
   ) {}
 
   async create(dto: CreateOrderDto, user: AuthenticatedUser) {
@@ -188,8 +186,11 @@ export class OrdersService {
     // PostgreSQL cannot continue a transaction after a failed statement.
     for (let attempt = 0; attempt < 5; attempt++) {
       const copiedKeys: string[] = [];
+      let created: Prisma.OrderGetPayload<{
+        select: ReturnType<typeof orderSelect>;
+      }>;
       try {
-        const created = await this.prisma.$transaction(
+        created = await this.prisma.$transaction(
           async (tx) => {
             // ProductsService.update uses the same lock before editing components.
             await tx.$queryRaw`SELECT id FROM products WHERE id = ${dto.productId} FOR UPDATE`;
@@ -621,7 +622,6 @@ export class OrdersService {
             timeout: 120000,
           },
         );
-        return this.snapshotResponse(created);
       } catch (error) {
         // A rolled-back transaction owns no images. Clean every copy before retrying.
         try {
@@ -636,6 +636,10 @@ export class OrdersService {
           continue;
         this.handleError(error);
       }
+      // The order is saved: one confirmation email, outside the rollback and retry above,
+      // so nothing about the email can undo or repeat the order.
+      await this.notifications.notifyOrderCreated(created);
+      return this.snapshotResponse(created);
     }
     throw new ConflictException(
       'Unable to create order due to a concurrent change; please retry',
@@ -782,38 +786,9 @@ export class OrdersService {
         }),
       true,
     ).then((saved) => this.snapshotResponse(saved));
-    if (updated.status !== order.status) await this.notifyStatusChange(updated);
+    // Only after the new status is saved, and only when it actually changed.
+    await this.notifications.notifyOrderStatusChanged(updated, order.status);
     return updated;
-  }
-
-  /**
-   * Emails the customer about their order's new status. The recipient is the order's own
-   * user, never request input. Email is a side effect: a failure is logged and the saved
-   * status stands.
-   */
-  private async notifyStatusChange(order: {
-    id: string;
-    orderNumber: string;
-    status: OrderStatus;
-    user: { email: string; firstName: string } | null;
-    product: { name: string } | null;
-  }) {
-    if (!order.user?.email) return;
-    try {
-      await this.mail.sendOrderStatusChangedEmail({
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        status: order.status,
-        productName: order.product?.name ?? 'Your HomeMade Creator order',
-        customer: { email: order.user.email, firstName: order.user.firstName },
-      });
-    } catch (error) {
-      this.logger.warn(
-        `Failed to send order status email orderId=${order.id} status=${order.status}: ${
-          error instanceof Error ? error.message : 'unknown error'
-        }`,
-      );
-    }
   }
 
   updatePaymentStatus(

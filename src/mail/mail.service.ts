@@ -5,11 +5,9 @@ import {
   MAIL_TRANSPORT,
   type ContactMessage,
   type MailTransport,
-  type OrderStatusEmail,
   type OutgoingMail,
   type RenderedEmail,
 } from './mail.types.js';
-import { orderStatusEmail } from './templates/order-status.template.js';
 import { contactMessageEmail } from './templates/contact-message.template.js';
 
 /** Header values are single lines: no CR/LF or other control characters can add headers. */
@@ -21,9 +19,10 @@ export const singleLine = (value: string) =>
     .trim();
 
 /**
- * The application's only SMTP client. Callers use the feature methods; the transport and
- * credentials never leave this service. Send failures are thrown for the caller to handle:
- * order updates log and continue, the contact form reports them.
+ * The application's only SMTP client: it sends, nothing more. What to say lives with the
+ * feature (e.g. OrderNotificationService); the transport and credentials never leave this
+ * service. Send failures are thrown for the caller to handle: order notifications log and
+ * continue, the contact form reports them.
  */
 @Injectable()
 export class MailService {
@@ -44,13 +43,6 @@ export class MailService {
   /** Checks the SMTP connection and login without sending anything. */
   async verifyConnection(): Promise<void> {
     await this.transport.verify();
-  }
-
-  async sendOrderStatusChangedEmail(input: OrderStatusEmail): Promise<void> {
-    await this.sendMail(input.customer.email, orderStatusEmail(input));
-    this.logger.log(
-      `Order status email sent orderId=${input.orderId} status=${input.status}`,
-    );
   }
 
   /** Delivered to the HomeMade Creator inbox; Reply goes straight to the customer. */

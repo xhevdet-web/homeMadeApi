@@ -12,6 +12,7 @@ export const authenticatedUserSelect = {
   postalCode: true,
   role: true,
   isActive: true,
+  notificationsEnabled: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.UserSelect;

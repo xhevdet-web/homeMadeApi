@@ -40,6 +40,11 @@ enum PaymentStatus {
   REFUNDED
 }
 
+// What a notification is about. Only order updates for now; other kinds can be added.
+enum NotificationType {
+  ORDER_STATUS
+}
+
 // How a gift arrives: a see-through container, or a closed one (box, bag) chosen in a colour.
 enum GiftPackagingType {
   TRANSPARENT
@@ -66,15 +71,19 @@ model User {
   address    String?
   postalCode String? @map("postal_code")
 
-  role     Role    @default(CUSTOMER)
-  isActive Boolean @default(true) @map("is_active")
+  role                 Role    @default(CUSTOMER)
+  isActive             Boolean @default(true) @map("is_active")
+  // In-app order updates (the notification centre). Order emails are transactional and
+  // are sent regardless.
+  notificationsEnabled Boolean @default(true) @map("notifications_enabled")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  products Product[]
-  orders   Order[]
+  products      Product[]
+  orders        Order[]
+  notifications Notification[]
 
   @@map("users")
 }
@@ -401,8 +410,9 @@ model Order {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  user    User    @relation(fields: [userId], references: [id])
-  product Product @relation(fields: [productId], references: [id])
+  user          User           @relation(fields: [userId], references: [id])
+  product       Product        @relation(fields: [productId], references: [id])
+  notifications Notification[]
 
   @@index([userId])
   @@index([productId])
@@ -410,4 +420,29 @@ model Order {
   @@index([paymentStatus])
   @@index([createdAt])
   @@map("orders")
+}
+
+// An update in a customer's in-app notification centre. It belongs to exactly one user and
+// is only ever read through that user's own session. Written by the backend when an order
+// event happens; never by the apps.
+model Notification {
+  id      String           @id @default(uuid())
+  userId  String           @map("user_id")
+  // The order it is about; kept (as null) if an admin deletes the order.
+  orderId String?          @map("order_id")
+  type    NotificationType
+  title   String
+  message String
+
+  isRead    Boolean   @default(false) @map("is_read")
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, isRead])
+  @@index([orderId])
+  @@map("notifications")
 }

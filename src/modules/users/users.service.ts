@@ -24,6 +24,7 @@ const userSelect = {
   postalCode: true,
   role: true,
   isActive: true,
+  notificationsEnabled: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.UserSelect;
@@ -75,10 +76,11 @@ export class UsersService {
       country: dto.country,
       address: dto.address,
       postalCode: dto.postalCode,
+      notificationsEnabled: dto.notificationsEnabled,
     });
   }
 
-  update(id: string, dto: UpdateUserDto) {
+  update(id: string, dto: UpdateUserDto & { notificationsEnabled?: boolean }) {
     return this.query(() =>
       this.prisma.user.update({
         where: { id },
@@ -93,6 +95,7 @@ export class UsersService {
           address: dto.address,
           postalCode: dto.postalCode,
           isActive: dto.isActive,
+          notificationsEnabled: dto.notificationsEnabled,
         },
         select: userSelect,
       }),

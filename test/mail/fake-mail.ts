@@ -1,5 +1,7 @@
 import type { TestingModuleBuilder } from '@nestjs/testing';
 import { MailService } from '../../src/mail/mail.service.js';
+import { OrderNotificationService } from '../../src/modules/orders/order-notification.service.js';
+import type { NotificationsService } from '../../src/modules/notifications/notifications.service.js';
 import {
   MAIL_CONFIG,
   MAIL_TRANSPORT,
@@ -46,3 +48,13 @@ export function withFakeMail(
 /** A MailService for code that builds services by hand. */
 export const fakeMailService = () =>
   new MailService(testMailConfig, fakeTransport());
+
+/**
+ * Order notifications over a recording transport, for services built by hand. Pass a real
+ * NotificationsService to store in-app notifications; by default none are stored.
+ */
+export const fakeOrderNotifications = (
+  notifications: NotificationsService = {
+    createOrderStatus: async () => false,
+  } as unknown as NotificationsService,
+) => new OrderNotificationService(fakeMailService(), notifications);

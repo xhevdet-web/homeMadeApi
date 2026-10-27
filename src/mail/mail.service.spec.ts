@@ -130,17 +130,19 @@ describe('order status email', () => {
     'uses friendly wording for %s',
     (status) => {
       const email = orderStatusEmail({
-        orderId: 'order-1',
         orderNumber: 'HM-2026-627079642',
         status,
+        totalPrice: 4200,
         productName: 'My <Hoodie>',
-        customer: { email: 'kate@example.com', firstName: 'Kate' },
+        customer: { firstName: 'Kate' },
       });
       expect(email.subject).toContain('HM-2026-627079642');
       // The raw value (e.g. READY_FOR_COURIER, CREATED) never appears, in any form.
       for (const content of [email.subject, email.text, email.html])
         expect(content).not.toMatch(new RegExp(`\\b${status}\\b`));
       expect(email.text).toContain(ORDER_STATUS_COPY[status].title);
+      expect(email.text).toContain(ORDER_STATUS_COPY[status].label);
+      expect(email.text).toContain('€42.00');
       expect(email.html).toContain('My &lt;Hoodie&gt;');
       expect(email.html).not.toContain('<script');
     },

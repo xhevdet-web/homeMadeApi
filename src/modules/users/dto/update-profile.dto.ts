@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsString, Length, ValidateIf } from 'class-validator';
+import { IsBoolean, IsString, Length, ValidateIf } from 'class-validator';
 
 export class UpdateProfileDto {
   @ValidateIf((_object, value: unknown) => value !== undefined)
@@ -51,4 +51,9 @@ export class UpdateProfileDto {
   @IsString()
   @Length(1, 20)
   postalCode?: string | null;
+
+  /** In-app order notifications (the notification centre). Order emails are always sent. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsBoolean()
+  notificationsEnabled?: boolean;
 }

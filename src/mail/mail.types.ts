@@ -26,12 +26,14 @@ export interface RenderedEmail {
   html: string;
 }
 
-export interface OrderStatusEmail {
-  orderId: string;
+/** What an order email may show: never ids, notes, payment internals or image keys. */
+export interface OrderEmail {
   orderNumber: string;
   status: OrderStatus;
+  /** Cents; shown as euros. */
+  totalPrice: number;
   productName: string;
-  customer: { email: string; firstName: string };
+  customer: { firstName: string };
 }
 
 export interface ContactMessage {
