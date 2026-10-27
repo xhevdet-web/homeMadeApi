@@ -7,6 +7,7 @@ import { UsersModule } from '../../src/modules/users/users.module.js';
 import { OrdersModule } from '../../src/modules/orders/orders.module.js';
 import { PrismaService } from '../../src/database/prisma.service.js';
 import { setupApp } from '../../src/config/setup-app.js';
+import { fakeTransport, withFakeMail } from '../mail/fake-mail.js';
 
 describe('Customer delivery profile and checkout', () => {
   let app: INestApplication<App>;
@@ -64,9 +65,10 @@ describe('Customer delivery profile and checkout', () => {
       'test-only-profile-secret-at-least-32-characters',
     );
     vi.stubEnv('JWT_ACCESS_EXPIRES_IN', '60m');
-    const module = await Test.createTestingModule({
-      imports: [UsersModule, OrdersModule],
-    })
+    const module = await withFakeMail(
+      Test.createTestingModule({ imports: [UsersModule, OrdersModule] }),
+      fakeTransport(),
+    )
       .overrideProvider(PrismaService)
       .useValue(prisma)
       .compile();

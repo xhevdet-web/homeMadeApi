@@ -7,6 +7,7 @@ import {
   Inject,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
@@ -22,6 +23,7 @@ import {
 } from '../products/product-sizes.js';
 import { StorageService } from '../../storage/storage.service.js';
 import { ImageWriteService } from '../../storage/image-write.service.js';
+import { MailService } from '../../mail/mail.service.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.type.js';
 import type { CreateOrderDto } from './dto/create-order.dto.js';
 import type { UpdateOrderDto } from './dto/update-order.dto.js';
@@ -147,10 +149,13 @@ function snapshotProduct(product: Record<string, unknown>) {
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(StorageService) private readonly storage: StorageService,
     @Inject(ImageWriteService) private readonly images: ImageWriteService,
+    @Inject(MailService) private readonly mail: MailService,
   ) {}
 
   async create(dto: CreateOrderDto, user: AuthenticatedUser) {
@@ -708,7 +713,7 @@ export class OrdersService {
         'Order status must advance exactly one step in the workflow',
       );
     // Include the previous status so a stale request cannot overwrite a concurrent transition.
-    return this.query(
+    const updated = await this.query(
       () =>
         this.prisma.order.update({
           where: { id, status: order.status },
@@ -716,7 +721,39 @@ export class OrdersService {
           select: orderSelect(user),
         }),
       true,
-    ).then((order) => this.snapshotResponse(order));
+    ).then((saved) => this.snapshotResponse(saved));
+    if (updated.status !== order.status) await this.notifyStatusChange(updated);
+    return updated;
+  }
+
+  /**
+   * Emails the customer about their order's new status. The recipient is the order's own
+   * user, never request input. Email is a side effect: a failure is logged and the saved
+   * status stands.
+   */
+  private async notifyStatusChange(order: {
+    id: string;
+    orderNumber: string;
+    status: OrderStatus;
+    user: { email: string; firstName: string } | null;
+    product: { name: string } | null;
+  }) {
+    if (!order.user?.email) return;
+    try {
+      await this.mail.sendOrderStatusChangedEmail({
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        productName: order.product?.name ?? 'Your HomeMade Creator order',
+        customer: { email: order.user.email, firstName: order.user.firstName },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to send order status email orderId=${order.id} status=${order.status}: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+    }
   }
 
   updatePaymentStatus(

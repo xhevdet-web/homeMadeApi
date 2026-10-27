@@ -166,3 +166,7 @@ POST /api/v1/auth/login accepts email and password, verifies Argon2id, and retur
 Registration and user updates now accept optional userName, phone, country, address and postalCode. Username is normalized to lowercase (3?30 letters/digits/dot/underscore/hyphen) and unique. Login accepts { identifier, password } for email or username; { email, password } remains compatible. Safe user and session responses include the new fields.
 
 Reusable JWT guard and configuration: see [authentication documentation](docs/authentication.md). JWT_ACCESS_EXPIRES_IN defaults to 60m. AuthModule exports JwtAuthGuard and JwtStrategy for use by importing feature modules.
+
+## Email
+
+Order status emails, the Contact us endpoint (POST /api/v1/contact) and the SMTP_* settings: see [email documentation](docs/email.md). Check the SMTP setup with `pnpm mail:test [you@example.com]`.

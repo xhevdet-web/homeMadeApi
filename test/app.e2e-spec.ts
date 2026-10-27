@@ -5,6 +5,7 @@ import type { App } from 'supertest/types.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { setupApp } from '../src/config/setup-app.js';
 import { AppModule } from './../src/app.module.js';
+import { fakeTransport, withFakeMail } from './mail/fake-mail.js';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
@@ -15,9 +16,10 @@ describe('AppController (e2e)', () => {
       'test-only-jwt-secret-at-least-32-characters',
     );
     vi.stubEnv('JWT_ACCESS_EXPIRES_IN', '60m');
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
+    const moduleFixture: TestingModule = await withFakeMail(
+      Test.createTestingModule({ imports: [AppModule] }),
+      fakeTransport(),
+    )
       .overrideProvider(PrismaService)
       .useValue({})
       .compile();

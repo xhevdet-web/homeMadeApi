@@ -8,6 +8,7 @@ import { PrismaService } from '../../src/database/prisma.service.js';
 import { Prisma } from '../../src/generated/prisma/client.js';
 import { setupApp } from '../../src/config/setup-app.js';
 import { StorageService } from '../../src/storage/storage.service.js';
+import { fakeTransport, testMailConfig, withFakeMail } from '../mail/fake-mail.js';
 
 const dbError = (code: string) =>
   new Prisma.PrismaClientKnownRequestError('Private SQL and credentials', {
@@ -114,6 +115,7 @@ describe('Orders HTTP', () => {
     $queryRaw: vi.fn(),
     $transaction: vi.fn(),
   };
+  const mail = fakeTransport();
   const base = '/api/v1/orders';
   const body = { productId, paymentType: 'CARD', customerNotes: 'Please call' };
   const admin = () =>
@@ -143,7 +145,10 @@ describe('Orders HTTP', () => {
       'test-only-jwt-secret-at-least-32-characters',
     );
     vi.stubEnv('JWT_ACCESS_EXPIRES_IN', '60m');
-    const module = await Test.createTestingModule({ imports: [OrdersModule] })
+    const module = await withFakeMail(
+      Test.createTestingModule({ imports: [OrdersModule] }),
+      mail,
+    )
       .overrideProvider(StorageService)
       .useValue(storage)
       .overrideProvider(PrismaService)
@@ -798,6 +803,78 @@ describe('Orders HTTP', () => {
     admin();
     order.update.mockRejectedValue(dbError('P2025'));
     await patch('/status', { status: 'CREATING' }).expect(409);
+    expect(mail.sendMail).not.toHaveBeenCalled();
+  });
+
+  describe('status emails', () => {
+    const customer = { ...account, email: 'kate@example.com', firstName: 'Kate' };
+    const saved = (status: string) => ({
+      ...record,
+      status,
+      user: customer,
+      product: { id: productId, name: 'My Hoodie' },
+    });
+
+    it('emails the order’s own customer when the status changes', async () => {
+      admin();
+      order.update.mockResolvedValue(saved('READY_FOR_COURIER'));
+      order.findUnique.mockResolvedValue({ ...record, status: 'CREATED' });
+      // A recipient in the request is not even accepted.
+      await patch('/status', {
+        status: 'READY_FOR_COURIER',
+        email: 'attacker@example.com',
+      }).expect(400);
+      expect(mail.sendMail).not.toHaveBeenCalled();
+      await patch('/status', { status: 'READY_FOR_COURIER' }).expect(200);
+      expect(mail.sendMail).toHaveBeenCalledTimes(1);
+      const message = mail.sendMail.mock.calls[0][0];
+      expect(message.to).toBe('kate@example.com');
+      expect(message.from).toEqual({
+        name: 'HomeMade Creator',
+        address: testMailConfig.from.address,
+      });
+      expect(message.subject).toBe(
+        'Your order is ready for delivery – #HM-2026-000000123',
+      );
+      for (const content of [message.html, message.text]) {
+        expect(content).toContain('Hi Kate,');
+        expect(content).toContain('HM-2026-000000123');
+        expect(content).toContain('My Hoodie');
+        expect(content).toContain('Ready for courier');
+        expect(content).not.toContain('READY_FOR_COURIER');
+      }
+    });
+
+    it('sends nothing when the saved status did not change', async () => {
+      admin();
+      order.findUnique.mockResolvedValue({ ...record, status: 'ORDERED' });
+      // e.g. a concurrent request already saved this status
+      order.update.mockResolvedValue(saved('ORDERED'));
+      await patch('/status', { status: 'CREATING' }).expect(200);
+      expect(mail.sendMail).not.toHaveBeenCalled();
+    });
+
+    it('sends nothing for payment, notes or image updates', async () => {
+      admin();
+      order.update.mockResolvedValue(saved('ORDERED'));
+      await patch('/payment-status', { paymentStatus: 'PAID' }).expect(200);
+      await patch('', { adminNotes: 'Packed', finalImageUrl: 'https://images.example.test/final.png' })
+        .expect(200);
+      expect(mail.sendMail).not.toHaveBeenCalled();
+    });
+
+    it('keeps the new status when the email cannot be sent', async () => {
+      admin();
+      order.update.mockResolvedValue(saved('CREATING'));
+      mail.sendMail.mockRejectedValue(
+        new Error('Invalid login: 535-5.7.8 Username and Password not accepted'),
+      );
+      const response = await patch('/status', { status: 'CREATING' }).expect(200);
+      expect(response.body.status).toBe('CREATING');
+      expect(mail.sendMail).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(response.body)).not.toMatch(/535|Password not accepted/);
+      expect(JSON.stringify(response.body)).not.toContain(testMailConfig.password);
+    });
   });
 
   it.each(['UNPAID', 'PAID', 'FAILED', 'REFUNDED'])(

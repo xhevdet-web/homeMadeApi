@@ -15,6 +15,7 @@ import { PrismaService } from '../../src/database/prisma.service.js';
 import { ProductsService } from '../../src/modules/products/products.service.js';
 import { OrdersService } from '../../src/modules/orders/orders.service.js';
 import type { AuthenticatedUser } from '../../src/common/types/authenticated-user.type.js';
+import { fakeMailService } from '../mail/fake-mail.js';
 
 // Opt in because these tests require PostgreSQL. Every write is in a disposable,
 // randomly named schema; existing application tables and records are never changed.
@@ -77,6 +78,7 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
         db as unknown as PrismaService,
         orderStorage,
         new ImageWriteService(orderStorage),
+        fakeMailService(),
       );
     }, 30000);
 
@@ -873,6 +875,7 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
         db as unknown as PrismaService,
         storage,
         new ImageWriteService(storage),
+        fakeMailService(),
       );
       await expect(
         service.create(
