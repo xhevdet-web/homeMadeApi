@@ -162,6 +162,27 @@ describe('Categories and SubCategories HTTP CRUD', () => {
       .expect(200);
     expect(subCategory.create).not.toHaveBeenCalled();
   });
+  it('gives a CASE category a free "Your own photo" upload design', async () => {
+    category.create.mockResolvedValue({
+      id,
+      name: 'Cases',
+      builderType: 'CASE',
+    });
+    subCategory.findMany.mockResolvedValue([]);
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .send({ name: 'Cases', builderType: 'CASE' })
+      .expect(201);
+    expect(subCategory.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        categoryId: id,
+        name: 'Your own photo',
+        type: 'CUSTOM_UPLOAD',
+        price: 0,
+        trackStock: false,
+      }),
+    });
+  });
   it('links a shared design library from JSON and FormData, and clears it', async () => {
     category.findUnique.mockResolvedValue({
       id: libraryId,

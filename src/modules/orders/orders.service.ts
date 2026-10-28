@@ -30,6 +30,10 @@ import {
   isJewelryCategory,
   isNecklaceCategory,
 } from '../categories/jewelry-measurement.js';
+import {
+  CASE_BUILDER,
+  needsBaseProduct,
+} from '../categories/builder-config.js';
 import { StorageService } from '../../storage/storage.service.js';
 import { ImageWriteService } from '../../storage/image-write.service.js';
 import { OrderNotificationService } from './order-notification.service.js';
@@ -329,9 +333,15 @@ export class OrdersService {
               !company && product.baseProductId
                 ? await this.lockBaseProduct(tx, product.baseProductId)
                 : null;
-            if (!company && product.category.builderType === 'APPAREL' && !base)
+            if (
+              !company &&
+              needsBaseProduct(product.category.builderType) &&
+              !base
+            )
               throw new BadRequestException(
-                'Choose the piece to design on before ordering this design',
+                product.category.builderType === CASE_BUILDER
+                  ? 'Choose your phone model before ordering this case'
+                  : 'Choose the piece to design on before ordering this design',
               );
             if (base) {
               if (!base.isActive)
@@ -479,6 +489,17 @@ export class OrdersService {
                     imageKey: await copyImage(base.imageKey),
                     backImageKey: await copyImage(base.backImageKey),
                     printAreas: base.printAreas,
+                    // Phone case models: brand and the overlay of the exact template.
+                    ...(base.deviceBrand
+                      ? { deviceBrand: base.deviceBrand }
+                      : {}),
+                    ...(base.overlayImageKey
+                      ? {
+                          overlayImageKey: await copyImage(
+                            base.overlayImageKey,
+                          ),
+                        }
+                      : {}),
                   }
                 : null,
               itemCount: product.items.reduce(
@@ -664,6 +685,8 @@ export class OrdersService {
         imageKey: true,
         backImageKey: true,
         printAreas: true,
+        deviceBrand: true,
+        overlayImageKey: true,
       },
     });
     if (!base) throw new NotFoundException('Base product not found');

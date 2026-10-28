@@ -194,7 +194,17 @@ model Product {
   colorHex   String? @map("color_hex")
   // Printable areas as fractions of imageKey/backImageKey, with the real print size:
   // { "front": { x, y, width, height, widthCm?, heightCm? }, "back": { ... } }
+  // CASE models: "front" is the printable back of the case (with an optional corner
+  // "radius"), and "camera" the camera opening that artwork never covers.
   printAreas Json?   @map("print_areas")
+
+  // COMPANY CASE models: the device maker, e.g. "APPLE" or "SAMSUNG", used to group models.
+  deviceBrand     String? @map("device_brand")
+  // COMPANY CASE models: transparent PNG drawn above the customer's artwork (case edge,
+  // camera island), aligned pixel for pixel with imageKey, the case template.
+  overlayImageKey String? @map("overlay_image_key")
+  // COMPANY catalog order within a category, e.g. phone models (lower first).
+  sortOrder       Int     @default(0) @map("sort_order")
 
   // COMPANY inventory. Sized products track stock per size and leave `stock` at 0:
   // [{ "size": "S", "stock": 20 }, { "size": "M", "stock": 28 }]

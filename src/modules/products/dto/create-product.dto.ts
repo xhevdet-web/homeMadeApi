@@ -93,9 +93,36 @@ export class CreateProductDto {
   @Matches(/^#[0-9A-Fa-f]{6}$/, { message: 'colorHex must look like #1F2937' })
   colorHex?: string | null;
 
-  /** { front?, back? } print areas; validated in the service by validatePrintAreas. */
+  /** { front?, back?, camera? } print areas; validated in the service by validatePrintAreas. */
   @IsOptional()
   printAreas?: Record<string, unknown> | null;
+
+  /** Phone case models: the device maker, e.g. APPLE or SAMSUNG; "" clears it. */
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() || null : value,
+  )
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
+  @Matches(/^[A-Z][A-Z0-9_]{0,39}$/, {
+    message: 'deviceBrand must be an uppercase name such as APPLE',
+  })
+  deviceBrand?: string | null;
+
+  /** Catalog order within the category, lower first. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsInt()
+  @Min(0)
+  @Max(1000000)
+  sortOrder?: number;
+
+  /**
+   * Upload only: false stores the product images untouched, e.g. phone case templates
+   * whose overlay must stay aligned with them pixel for pixel.
+   */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsBoolean()
+  removeBackground?: boolean;
 
   // ---- CUSTOMER ----
 

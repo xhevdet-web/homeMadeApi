@@ -12,7 +12,11 @@ import { PrismaService } from '../../database/prisma.service.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import type { CreateCategoryDto } from './dto/create-category.dto.js';
 import type { UpdateCategoryDto } from './dto/update-category.dto.js';
-import { validateBuilderConfig } from './builder-config.js';
+import {
+  acceptsUploads,
+  CASE_BUILDER,
+  validateBuilderConfig,
+} from './builder-config.js';
 import {
   isJewelryCategory,
   normalizeCategorySizes,
@@ -61,8 +65,8 @@ export class CategoriesService {
         }),
       ),
     }));
-    if (created.builderType === 'APPAREL')
-      await this.ensureOwnDesign(created.id);
+    if (acceptsUploads(created.builderType))
+      await this.ensureOwnDesign(created.id, created.builderType);
     return created;
   }
 
@@ -102,8 +106,13 @@ export class CategoriesService {
   }
 
   // APPAREL categories always offer "Your own design": customers upload their artwork
-  // for this design's price (charged once per design). Admins may edit or deactivate it.
-  private async ensureOwnDesign(categoryId: string) {
+  // for this design's price (charged once per design). CASE categories offer "Your own
+  // photo", free by default. Admins may edit, reprice or deactivate it.
+  private async ensureOwnDesign(
+    categoryId: string,
+    builderType: string | null,
+  ) {
+    const phoneCase = builderType === CASE_BUILDER;
     const existing = await this.query(() =>
       this.prisma.subCategory.findMany({
         where: { categoryId, type: 'CUSTOM_UPLOAD' },
@@ -116,10 +125,12 @@ export class CategoriesService {
       this.prisma.subCategory.create({
         data: {
           categoryId,
-          name: 'Your own design',
-          description: 'Upload your own artwork to print on your piece.',
+          name: phoneCase ? 'Your own photo' : 'Your own design',
+          description: phoneCase
+            ? 'Upload your own photo to print on your phone case.'
+            : 'Upload your own artwork to print on your piece.',
           type: 'CUSTOM_UPLOAD',
-          price: 500,
+          price: phoneCase ? 0 : 500,
           stock: 0,
           trackStock: false,
         },
@@ -195,8 +206,8 @@ export class CategoriesService {
       ),
       oldKeys: key ? [previous?.imageKey] : [],
     }));
-    if (updated.builderType === 'APPAREL')
-      await this.ensureOwnDesign(updated.id);
+    if (acceptsUploads(updated.builderType))
+      await this.ensureOwnDesign(updated.id, updated.builderType);
     return updated;
   }
 

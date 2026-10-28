@@ -21,6 +21,7 @@ import { CreateProductDto } from './dto/create-product.dto.js';
 import { UpdateProductDto } from './dto/update-product.dto.js';
 import { ProductQueryDto } from './dto/product-query.dto.js';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard.js';
+import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.type.js';
 
@@ -32,8 +33,12 @@ export class ProductsController {
   ) {}
   /** e.g. ?categoryId=…&origin=COMPANY — filtered in the database, not on the client. */
   @Get()
-  findAll(@Query() query: ProductQueryDto) {
-    return this.service.findAll(query);
+  @UseGuards(OptionalJwtAuthGuard)
+  findAll(
+    @Query() query: ProductQueryDto,
+    @CurrentUser() viewer?: AuthenticatedUser,
+  ) {
+    return this.service.findAll(query, viewer);
   }
   @Get('creations/from-others')
   @UseGuards(JwtAuthGuard)
@@ -45,8 +50,12 @@ export class ProductsController {
     return this.service.findCompletedCreationsFromOthers(user, categoryId);
   }
   @Get(':id')
-  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.service.findOne(id);
+  @UseGuards(OptionalJwtAuthGuard)
+  findOne(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() viewer?: AuthenticatedUser,
+  ) {
+    return this.service.findOne(id, viewer);
   }
   @ImageUpload('product')
   @Post()
@@ -61,6 +70,7 @@ export class ProductsController {
       backDesignPreview?: Express.Multer.File[];
       customDesigns?: Express.Multer.File[];
       backImage?: Express.Multer.File[];
+      overlayImage?: Express.Multer.File[];
     },
   ) {
     return this.service.create(
@@ -71,6 +81,7 @@ export class ProductsController {
       files?.backDesignPreview?.[0],
       files?.customDesigns ?? [],
       files?.backImage?.[0],
+      files?.overlayImage?.[0],
     );
   }
   @ImageUpload('product', true)
@@ -86,6 +97,7 @@ export class ProductsController {
       designPreview?: Express.Multer.File[];
       backDesignPreview?: Express.Multer.File[];
       backImage?: Express.Multer.File[];
+      overlayImage?: Express.Multer.File[];
     },
   ) {
     return this.service.update(
@@ -96,6 +108,7 @@ export class ProductsController {
       files?.designPreview?.[0],
       files?.backDesignPreview?.[0],
       files?.backImage?.[0],
+      files?.overlayImage?.[0],
     );
   }
   @Delete(':id')

@@ -1,6 +1,12 @@
 import { OmitType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsString, IsUUID, Length, ValidateIf } from 'class-validator';
+import {
+  IsBoolean,
+  IsString,
+  IsUUID,
+  Length,
+  ValidateIf,
+} from 'class-validator';
 import { CreateProductDto } from './create-product.dto.js';
 
 // Origin, base product and gift packaging are fixed at creation; customers save an edited
@@ -25,4 +31,9 @@ export class UpdateProductDto extends OmitType(CreateProductDto, [
   @IsString()
   @Length(1, 200)
   name?: string;
+
+  /** Phone case models: true deletes the overlay drawn above the customer's image. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsBoolean()
+  removeOverlay?: boolean;
 }

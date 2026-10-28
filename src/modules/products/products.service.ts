@@ -27,6 +27,7 @@ import {
   type SizeStock,
 } from './product-sizes.js';
 import { validatePrintAreas } from './print-area.js';
+import { assertSeeThroughOverlay } from './case-overlay.js';
 import {
   assertNotOverfilled,
   measuredSize,
@@ -36,7 +37,10 @@ import {
   type Piece,
 } from '../categories/jewelry-measurement.js';
 import {
+  acceptsUploads,
+  CASE_BUILDER,
   isCanvasBuilder,
+  needsBaseProduct,
   TEXT_BUILDERS,
 } from '../categories/builder-config.js';
 import type { TextLayerDto } from './dto/text-layer.dto.js';
@@ -81,9 +85,28 @@ const COMPANY_FIELDS = [
   'color',
   'colorHex',
   'printAreas',
+  'deviceBrand',
+  'sortOrder',
 ] as const;
 const CUSTOMER_INVENTORY =
   'Customer design price is calculated; inventory belongs to its components and base product';
+
+type Viewer = Pick<AuthenticatedUser, 'id' | 'role'> | undefined;
+type Listed = {
+  origin: string;
+  createdById: string;
+  category: { builderType: string | null } | null;
+};
+
+/**
+ * Phone case designs usually carry a customer's personal photo, so they are private: only
+ * their creator and admins can see them. Every other product keeps its existing visibility.
+ */
+function visibleTo(product: Listed, viewer: Viewer) {
+  if (product.origin !== 'CUSTOMER') return true;
+  if (product.category?.builderType !== CASE_BUILDER) return true;
+  return viewer?.role === 'ADMIN' || viewer?.id === product.createdById;
+}
 
 @Injectable()
 export class ProductsService {
@@ -100,6 +123,7 @@ export class ProductsService {
     backDesignPreview?: Express.Multer.File,
     customDesigns: Express.Multer.File[] = [],
     backImage?: Express.Multer.File,
+    overlayImage?: Express.Multer.File,
   ) {
     const company = dto.origin === 'COMPANY';
     if (company) {
@@ -114,137 +138,176 @@ export class ProductsService {
         );
     } else if (
       COMPANY_FIELDS.some((field) => dto[field] !== undefined) ||
-      backImage
+      backImage ||
+      overlayImage
     ) {
       throw new BadRequestException(CUSTOMER_INVENTORY);
     }
-    // Printed artwork must keep transparency, so customer uploads are PNG only (the
-    // signature is checked against the declared type when the file is stored).
-    if (customDesigns.some((upload) => upload.mimetype !== 'image/png'))
-      throw new BadRequestException('Uploaded designs must be PNG images');
     const inventory = company ? this.companyInventory(dto) : undefined;
     const printAreas = company ? validatePrintAreas(dto.printAreas) : undefined;
-    return this.images.saveMany(
-      [
-        { file, folder: 'products' },
-        { file: designPreview, folder: 'designs' },
-        { file: backDesignPreview, folder: 'designs' },
-        { file: backImage, folder: 'products' },
-        // Customer artwork is stored untouched: it is printed as uploaded.
-        ...customDesigns.map((upload) => ({
-          file: upload,
-          folder: 'custom-designs',
-          process: false,
-        })),
-      ],
-      async ([
-        key,
-        previewKey,
-        backPreviewKey,
-        backImageKey,
-        ...customKeys
-      ]) => ({
-        result: await this.query(() =>
-          this.prisma.$transaction(async (tx) => {
-            const category = await this.categoryConfiguration(
-              tx,
-              dto.categoryId,
-            );
-            const calculated = company
-              ? await this.readyMadeItems(tx, dto.categoryId, dto.items)
-              : await this.calculateCustomItems(
+    const process = dto.removeBackground !== false;
+    return this.checkUploadTypes(dto.categoryId, customDesigns)
+      .then(() => assertSeeThroughOverlay(overlayImage))
+      .then(() =>
+        this.images.saveMany(
+          [
+            { file, folder: 'products', process },
+            { file: designPreview, folder: 'designs' },
+            { file: backDesignPreview, folder: 'designs' },
+            { file: backImage, folder: 'products', process },
+            // A case overlay must stay aligned with its template, so it is never processed.
+            { file: overlayImage, folder: 'products', process: false },
+            // Customer artwork is stored untouched: it is printed as uploaded.
+            ...customDesigns.map((upload) => ({
+              file: upload,
+              folder: 'custom-designs',
+              process: false,
+            })),
+          ],
+          async ([
+            key,
+            previewKey,
+            backPreviewKey,
+            backImageKey,
+            overlayImageKey,
+            ...customKeys
+          ]) => ({
+            result: await this.query(() =>
+              this.prisma.$transaction(async (tx) => {
+                const category = await this.categoryConfiguration(
                   tx,
-                  category,
-                  dto.items ?? [],
-                  customKeys,
+                  dto.categoryId,
                 );
-            const textLayers = this.textLayers(category, dto.textLayers);
-            const base = company
-              ? undefined
-              : await this.resolveBaseProduct(tx, category, dto.baseProductId);
-            const basePrice = base?.price ?? 0;
-            const packaging = await giftPackagingFields(
-              tx,
-              { builderType: category.builderType, company },
-              dto.giftPackagingId,
-              dto.giftPackagingColorId,
-            );
-            if (
-              calculated.price + basePrice + packaging.packagingPrice >
-              2147483647
-            )
-              throw new BadRequestException(
-                'Product quantity or price exceeds the supported integer range',
-              );
-            const selectedSize = base?.sizes.length
-              ? this.resolveBaseSize(base, dto.selectedSizeId)
-              : dto.selectedSizeId === undefined
-                ? undefined
-                : await this.resolveSize(
-                    tx,
-                    dto.categoryId,
-                    dto.selectedSizeId,
-                    dto.items ?? [],
-                    dto.selectedMeasurementMm,
+                const calculated = company
+                  ? await this.readyMadeItems(tx, dto.categoryId, dto.items)
+                  : await this.calculateCustomItems(
+                      tx,
+                      category,
+                      dto.items ?? [],
+                      customKeys,
+                    );
+                const textLayers = this.textLayers(category, dto.textLayers);
+                const base = company
+                  ? undefined
+                  : await this.resolveBaseProduct(
+                      tx,
+                      category,
+                      dto.baseProductId,
+                    );
+                const basePrice = base?.price ?? 0;
+                const packaging = await giftPackagingFields(
+                  tx,
+                  { builderType: category.builderType, company },
+                  dto.giftPackagingId,
+                  dto.giftPackagingColorId,
+                );
+                if (
+                  calculated.price + basePrice + packaging.packagingPrice >
+                  2147483647
+                )
+                  throw new BadRequestException(
+                    'Product quantity or price exceeds the supported integer range',
                   );
-            if (
-              dto.selectedMeasurementMm !== undefined &&
-              dto.selectedSizeId === undefined
-            )
-              throw new BadRequestException('Choose a size for the length');
-            return tx.product.create({
-              data: {
-                origin: dto.origin ?? 'CUSTOMER',
-                selectedSize,
-                textLayers: textLayers ?? undefined,
-                createdById: user.id,
-                categoryId: dto.categoryId,
-                baseProductId: base?.id,
-                name: dto.name,
-                description: dto.description,
+                const selectedSize = base?.sizes.length
+                  ? this.resolveBaseSize(base, dto.selectedSizeId)
+                  : dto.selectedSizeId === undefined
+                    ? undefined
+                    : await this.resolveSize(
+                        tx,
+                        dto.categoryId,
+                        dto.selectedSizeId,
+                        dto.items ?? [],
+                        dto.selectedMeasurementMm,
+                      );
+                if (
+                  dto.selectedMeasurementMm !== undefined &&
+                  dto.selectedSizeId === undefined
+                )
+                  throw new BadRequestException('Choose a size for the length');
+                return tx.product.create({
+                  data: {
+                    origin: dto.origin ?? 'CUSTOMER',
+                    selectedSize,
+                    textLayers: textLayers ?? undefined,
+                    createdById: user.id,
+                    categoryId: dto.categoryId,
+                    baseProductId: base?.id,
+                    name: dto.name,
+                    description: dto.description,
 
-                imageKey: key,
-                backImageKey,
-                designPreviewKey: previewKey,
-                backDesignPreviewKey: backPreviewKey,
-                color: company ? dto.color : undefined,
-                colorHex: company ? dto.colorHex : undefined,
-                printAreas,
-                sizes: inventory?.sizes ?? undefined,
-                stock: inventory?.stock ?? 0,
-                basePrice,
-                ...packaging,
-                isActive: dto.isActive,
-                price: company
-                  ? dto.price
-                  : calculated.price + basePrice + packaging.packagingPrice,
-                itemCount: calculated.itemCount,
-                items: { create: calculated.items },
-              },
-              include: productInclude,
-            });
+                    imageKey: key,
+                    backImageKey,
+                    designPreviewKey: previewKey,
+                    backDesignPreviewKey: backPreviewKey,
+                    color: company ? dto.color : undefined,
+                    colorHex: company ? dto.colorHex : undefined,
+                    printAreas,
+                    deviceBrand: company ? dto.deviceBrand : undefined,
+                    overlayImageKey,
+                    sortOrder: company ? dto.sortOrder : undefined,
+                    sizes: inventory?.sizes ?? undefined,
+                    stock: inventory?.stock ?? 0,
+                    basePrice,
+                    ...packaging,
+                    isActive: dto.isActive,
+                    price: company
+                      ? dto.price
+                      : calculated.price + basePrice + packaging.packagingPrice,
+                    itemCount: calculated.itemCount,
+                    items: { create: calculated.items },
+                  },
+                  include: productInclude,
+                });
+              }),
+            ),
           }),
         ),
+      );
+  }
+
+  /**
+   * Printed apparel artwork must keep transparency, so its uploads are PNG only. Phone
+   * cases print a full-bleed photo, so they also accept JPEG and WebP. The file signature
+   * is checked against the declared type when each file is stored.
+   */
+  private async checkUploadTypes(
+    categoryId: string,
+    uploads: Express.Multer.File[],
+  ) {
+    if (uploads.every((upload) => upload.mimetype === 'image/png')) return;
+    const category = await this.query(() =>
+      this.prisma.category.findUnique({
+        where: { id: categoryId },
+        select: { builderType: true },
       }),
     );
+    if (category?.builderType !== CASE_BUILDER)
+      throw new BadRequestException('Uploaded designs must be PNG images');
   }
 
   /** Filtered by category, origin, creator, status and a name/description/colour search. */
-  findAll(query: ProductQueryDto = {}) {
+  findAll(query: ProductQueryDto = {}, viewer?: Viewer) {
     const search = query.search
       ? { contains: query.search, mode: 'insensitive' as const }
       : undefined;
-    return this.list({
-      categoryId: query.categoryId,
-      origin: query.origin,
-      createdById: query.createdById,
-      isActive: query.isActive,
-      ...(search
-        ? {
-            OR: [{ name: search }, { description: search }, { color: search }],
-          }
-        : {}),
-    });
+    return this.list(
+      {
+        categoryId: query.categoryId,
+        origin: query.origin,
+        createdById: query.createdById,
+        isActive: query.isActive,
+        ...(search
+          ? {
+              OR: [
+                { name: search },
+                { description: search },
+                { color: search },
+              ],
+            }
+          : {}),
+      },
+      viewer,
+    );
   }
 
   /** Completed customer designs of other users, optionally of one category. */
@@ -273,26 +336,31 @@ export class ProductsService {
       }),
     );
     return {
-      data: orders.map(({ id, updatedAt, product }) => ({
-        completedOrderId: id,
-        completedOrderUpdatedAt: updatedAt,
-        product,
-      })),
+      // Phone cases carry personal photos and are never shown to other customers.
+      data: orders
+        .filter(({ product }) => visibleTo(product, undefined))
+        .map(({ id, updatedAt, product }) => ({
+          completedOrderId: id,
+          completedOrderUpdatedAt: updatedAt,
+          product,
+        })),
     };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, viewer?: Viewer) {
     const product = await this.query(() =>
       this.prisma.product.findUnique({
         where: { id },
         include: productInclude,
       }),
     );
-    if (!product) throw new NotFoundException('Product not found');
+    // A private design reads as missing, so its id reveals nothing to other customers.
+    if (!product || !visibleTo(product, viewer))
+      throw new NotFoundException('Product not found');
     return product;
   }
 
-  async findByCategory(categoryId: string) {
+  async findByCategory(categoryId: string, viewer?: Viewer) {
     const category = await this.query(() =>
       this.prisma.category.findUnique({
         where: { id: categoryId },
@@ -300,10 +368,10 @@ export class ProductsService {
       }),
     );
     if (!category) throw new NotFoundException('Category not found');
-    return this.list({ categoryId });
+    return this.list({ categoryId }, viewer);
   }
 
-  async findBySubCategory(subCategoryId: string) {
+  async findBySubCategory(subCategoryId: string, viewer?: Viewer) {
     const subCategory = await this.query(() =>
       this.prisma.subCategory.findUnique({
         where: { id: subCategoryId },
@@ -311,10 +379,10 @@ export class ProductsService {
       }),
     );
     if (!subCategory) throw new NotFoundException('SubCategory not found');
-    return this.list({ items: { some: { subCategoryId } } });
+    return this.list({ items: { some: { subCategoryId } } }, viewer);
   }
 
-  async findByUser(createdById: string) {
+  async findByUser(createdById: string, viewer?: Viewer) {
     const user = await this.query(() =>
       this.prisma.user.findUnique({
         where: { id: createdById },
@@ -322,7 +390,7 @@ export class ProductsService {
       }),
     );
     if (!user) throw new NotFoundException('User not found');
-    return this.list({ createdById });
+    return this.list({ createdById }, viewer);
   }
 
   update(
@@ -333,217 +401,247 @@ export class ProductsService {
     designPreview?: Express.Multer.File,
     backDesignPreview?: Express.Multer.File,
     backImage?: Express.Multer.File,
+    overlayImage?: Express.Multer.File,
   ) {
     this.requireAdmin(user);
     const printAreas = validatePrintAreas(dto.printAreas);
-    return this.images.saveMany(
-      [
-        { file, folder: 'products' },
-        { file: designPreview, folder: 'designs' },
-        { file: backDesignPreview, folder: 'designs' },
-        { file: backImage, folder: 'products' },
-      ],
-      async ([key, previewKey, backPreviewKey, backImageKey]) => {
-        let oldKey: string | null | undefined;
-        let oldPreviewKey: string | null | undefined;
-        let oldBackPreviewKey: string | null | undefined;
-        let oldBackImageKey: string | null | undefined;
-        const result = await this.query(() =>
-          this.prisma.$transaction(async (tx) => {
-            // Shared lock protocol with order creation: a design cannot change underneath an order.
-            await tx.$queryRaw`SELECT id FROM products WHERE id = ${id} FOR UPDATE`;
-            const product = await tx.product.findUnique({
-              where: { id },
-              include: { items: true, _count: { select: { orders: true } } },
-            });
-            if (!product) throw new NotFoundException('Product not found');
-            const categoryId = dto.categoryId ?? product.categoryId;
-            const category = await this.categoryConfiguration(tx, categoryId);
-            const textLayers =
-              dto.textLayers === undefined
-                ? undefined
-                : this.textLayers(category, dto.textLayers);
-            const company = product.origin === 'COMPANY';
-            if (
-              !company &&
-              (COMPANY_FIELDS.some((field) => dto[field] !== undefined) ||
-                backImageKey)
-            )
-              throw new BadRequestException(CUSTOMER_INVENTORY);
-            if (
-              product.baseProductId &&
-              dto.categoryId !== undefined &&
-              dto.categoryId !== product.categoryId
-            )
-              throw new BadRequestException(
-                'A design made on a base product stays in its category',
-              );
-            oldKey = product.imageKey;
-            oldPreviewKey = product.designPreviewKey;
-            oldBackPreviewKey = product.backDesignPreviewKey;
-            oldBackImageKey = product.backImageKey;
-            const data: Prisma.ProductUpdateInput = {
-              name: dto.name,
-              description: dto.description,
-
-              imageKey: key,
-              backImageKey,
-              designPreviewKey: previewKey,
-              backDesignPreviewKey: backPreviewKey,
-              isActive: dto.isActive,
-              textLayers:
-                textLayers === undefined
-                  ? undefined
-                  : textLayers === null
-                    ? Prisma.DbNull
-                    : textLayers,
-            };
-            if (company) {
-              const sizes =
-                dto.sizes === undefined ? parseSizes(product.sizes) : dto.sizes;
-              const inventory = this.companyInventory({
-                price: dto.price ?? product.price,
-                stock: dto.stock ?? (sizes?.length ? undefined : product.stock),
-                sizes,
+    const process = dto.removeBackground !== false;
+    return assertSeeThroughOverlay(overlayImage).then(() =>
+      this.images.saveMany(
+        [
+          { file, folder: 'products', process },
+          { file: designPreview, folder: 'designs' },
+          { file: backDesignPreview, folder: 'designs' },
+          { file: backImage, folder: 'products', process },
+          { file: overlayImage, folder: 'products', process: false },
+        ],
+        async ([
+          key,
+          previewKey,
+          backPreviewKey,
+          backImageKey,
+          overlayImageKey,
+        ]) => {
+          let oldKey: string | null | undefined;
+          let oldPreviewKey: string | null | undefined;
+          let oldBackPreviewKey: string | null | undefined;
+          let oldBackImageKey: string | null | undefined;
+          let oldOverlayImageKey: string | null | undefined;
+          const result = await this.query(() =>
+            this.prisma.$transaction(async (tx) => {
+              // Shared lock protocol with order creation: a design cannot change underneath an order.
+              await tx.$queryRaw`SELECT id FROM products WHERE id = ${id} FOR UPDATE`;
+              const product = await tx.product.findUnique({
+                where: { id },
+                include: { items: true, _count: { select: { orders: true } } },
               });
-              data.price = dto.price;
-              data.stock = inventory.stock;
-              if (dto.sizes !== undefined)
-                data.sizes = inventory.sizes ?? Prisma.DbNull;
-              data.color = dto.color;
-              data.colorHex = dto.colorHex;
-              if (dto.printAreas !== undefined)
-                data.printAreas = printAreas ?? Prisma.DbNull;
-              if (dto.items !== undefined || dto.categoryId !== undefined) {
-                const categoryId = dto.categoryId ?? product.categoryId;
-                const calculated = await this.readyMadeItems(
-                  tx,
-                  categoryId,
+              if (!product) throw new NotFoundException('Product not found');
+              const categoryId = dto.categoryId ?? product.categoryId;
+              const category = await this.categoryConfiguration(tx, categoryId);
+              const textLayers =
+                dto.textLayers === undefined
+                  ? undefined
+                  : this.textLayers(category, dto.textLayers);
+              const company = product.origin === 'COMPANY';
+              if (
+                !company &&
+                (COMPANY_FIELDS.some((field) => dto[field] !== undefined) ||
+                  backImageKey ||
+                  overlayImageKey ||
+                  dto.removeOverlay)
+              )
+                throw new BadRequestException(CUSTOMER_INVENTORY);
+              if (
+                product.baseProductId &&
+                dto.categoryId !== undefined &&
+                dto.categoryId !== product.categoryId
+              )
+                throw new BadRequestException(
+                  'A design made on a base product stays in its category',
+                );
+              oldKey = product.imageKey;
+              oldPreviewKey = product.designPreviewKey;
+              oldBackPreviewKey = product.backDesignPreviewKey;
+              oldBackImageKey = product.backImageKey;
+              oldOverlayImageKey = product.overlayImageKey;
+              const data: Prisma.ProductUpdateInput = {
+                name: dto.name,
+                description: dto.description,
+
+                imageKey: key,
+                backImageKey,
+                designPreviewKey: previewKey,
+                backDesignPreviewKey: backPreviewKey,
+                isActive: dto.isActive,
+                textLayers:
+                  textLayers === undefined
+                    ? undefined
+                    : textLayers === null
+                      ? Prisma.DbNull
+                      : textLayers,
+              };
+              if (company) {
+                const sizes =
+                  dto.sizes === undefined
+                    ? parseSizes(product.sizes)
+                    : dto.sizes;
+                const inventory = this.companyInventory({
+                  price: dto.price ?? product.price,
+                  stock:
+                    dto.stock ?? (sizes?.length ? undefined : product.stock),
+                  sizes,
+                });
+                data.price = dto.price;
+                data.stock = inventory.stock;
+                if (dto.sizes !== undefined)
+                  data.sizes = inventory.sizes ?? Prisma.DbNull;
+                data.color = dto.color;
+                data.colorHex = dto.colorHex;
+                data.deviceBrand = dto.deviceBrand;
+                data.sortOrder = dto.sortOrder;
+                // A new overlay replaces the old one; removeOverlay drops it entirely.
+                data.overlayImageKey =
+                  overlayImageKey ?? (dto.removeOverlay ? null : undefined);
+                if (dto.printAreas !== undefined)
+                  data.printAreas = printAreas ?? Prisma.DbNull;
+                if (dto.items !== undefined || dto.categoryId !== undefined) {
+                  const categoryId = dto.categoryId ?? product.categoryId;
+                  const calculated = await this.readyMadeItems(
+                    tx,
+                    categoryId,
+                    dto.items ??
+                      product.items.map((item) => ({
+                        subCategoryId: item.subCategoryId,
+                        quantity: item.quantity,
+                        position: item.position ?? undefined,
+                      })),
+                  );
+                  data.category = { connect: { id: categoryId } };
+                  data.itemCount = calculated.itemCount;
+                  data.items = { deleteMany: {}, create: calculated.items };
+                }
+              } else if (product._count.orders > 0) {
+                // Orders reference this design. Preserve quantities and unit-price snapshots for order history.
+                if (
+                  dto.items !== undefined ||
+                  dto.selectedSizeId !== undefined ||
+                  dto.selectedMeasurementMm !== undefined ||
+                  dto.textLayers !== undefined ||
+                  (dto.categoryId !== undefined &&
+                    dto.categoryId !== product.categoryId)
+                )
+                  throw new ConflictException(
+                    'Ordered product components cannot be changed; create a new product design',
+                  );
+              } else if (
+                (!file && !designPreview && !backDesignPreview) ||
+                dto.items !== undefined ||
+                dto.categoryId !== undefined
+              ) {
+                const items =
                   dto.items ??
-                    product.items.map((item) => ({
-                      subCategoryId: item.subCategoryId,
-                      quantity: item.quantity,
-                      position: item.position ?? undefined,
-                    })),
+                  product.items.map((item) => ({
+                    subCategoryId: item.subCategoryId,
+                    quantity: item.quantity,
+                    position: item.position ?? undefined,
+                    side: (item.side as ProductItemDto['side']) ?? undefined,
+                    x: item.x ?? undefined,
+                    y: item.y ?? undefined,
+                    scale: item.scale ?? undefined,
+                    rotation: item.rotation ?? undefined,
+                    customImageKey: item.customImageKey ?? undefined,
+                  }));
+                const calculated = await this.calculateCustomItems(
+                  tx,
+                  category,
+                  items,
                 );
                 data.category = { connect: { id: categoryId } };
+                // Base product and packaging prices were snapshotted when the design was created.
+                data.price =
+                  calculated.price +
+                  (product.basePrice ?? 0) +
+                  (product.packagingPrice ?? 0);
                 data.itemCount = calculated.itemCount;
                 data.items = { deleteMany: {}, create: calculated.items };
               }
-            } else if (product._count.orders > 0) {
-              // Orders reference this design. Preserve quantities and unit-price snapshots for order history.
+              const base = product.baseProductId
+                ? await tx.product.findUnique({
+                    where: { id: product.baseProductId },
+                    select: { name: true, sizes: true },
+                  })
+                : null;
+              const baseSizes = parseSizes(base?.sizes);
               if (
-                dto.items !== undefined ||
+                dto.selectedSizeId !== undefined &&
+                base &&
+                baseSizes.length
+              ) {
+                data.selectedSize = this.resolveBaseSize(
+                  { name: base.name, sizes: baseSizes },
+                  dto.selectedSizeId,
+                );
+              } else if (
                 dto.selectedSizeId !== undefined ||
-                dto.selectedMeasurementMm !== undefined ||
-                dto.textLayers !== undefined ||
-                (dto.categoryId !== undefined &&
-                  dto.categoryId !== product.categoryId)
-              )
-                throw new ConflictException(
-                  'Ordered product components cannot be changed; create a new product design',
-                );
-            } else if (
-              (!file && !designPreview && !backDesignPreview) ||
-              dto.items !== undefined ||
-              dto.categoryId !== undefined
-            ) {
-              const items =
-                dto.items ??
-                product.items.map((item) => ({
-                  subCategoryId: item.subCategoryId,
-                  quantity: item.quantity,
-                  position: item.position ?? undefined,
-                  side: (item.side as ProductItemDto['side']) ?? undefined,
-                  x: item.x ?? undefined,
-                  y: item.y ?? undefined,
-                  scale: item.scale ?? undefined,
-                  rotation: item.rotation ?? undefined,
-                  customImageKey: item.customImageKey ?? undefined,
-                }));
-              const calculated = await this.calculateCustomItems(
-                tx,
-                category,
-                items,
-              );
-              data.category = { connect: { id: categoryId } };
-              // Base product and packaging prices were snapshotted when the design was created.
-              data.price =
-                calculated.price +
-                (product.basePrice ?? 0) +
-                (product.packagingPrice ?? 0);
-              data.itemCount = calculated.itemCount;
-              data.items = { deleteMany: {}, create: calculated.items };
-            }
-            const base = product.baseProductId
-              ? await tx.product.findUnique({
-                  where: { id: product.baseProductId },
-                  select: { name: true, sizes: true },
-                })
-              : null;
-            const baseSizes = parseSizes(base?.sizes);
-            if (dto.selectedSizeId !== undefined && base && baseSizes.length) {
-              data.selectedSize = this.resolveBaseSize(
-                { name: base.name, sizes: baseSizes },
-                dto.selectedSizeId,
-              );
-            } else if (
-              dto.selectedSizeId !== undefined ||
-              dto.selectedMeasurementMm !== undefined
-            ) {
-              // A new length alone keeps the stored size; a new size alone keeps the
-              // stored length only when it still belongs to that size.
-              const stored = selectedMeasuredSize(product.selectedSize);
-              const sizeId =
-                dto.selectedSizeId ?? selectedSizeId(product.selectedSize);
-              if (!sizeId)
-                throw new BadRequestException('Choose a size for the length');
-              data.selectedSize = await this.resolveSize(
-                tx,
-                dto.categoryId ?? product.categoryId,
-                sizeId,
-                dto.items ?? product.items,
-                dto.selectedMeasurementMm ??
-                  (stored?.id === sizeId
-                    ? stored.selectedMeasurementMm
-                    : undefined),
-              );
-            } else if (
-              !base &&
-              (dto.items !== undefined || dto.categoryId !== undefined)
-            ) {
-              // Preserve the stored size snapshot; never accept frontend limits.
-              const category = await tx.category.findUnique({
-                where: { id: dto.categoryId ?? product.categoryId },
-                select: { sizes: true },
-              });
-              if (Array.isArray(category?.sizes) && category.sizes.length > 0)
-                await this.validateStoredSize(
+                dto.selectedMeasurementMm !== undefined
+              ) {
+                // A new length alone keeps the stored size; a new size alone keeps the
+                // stored length only when it still belongs to that size.
+                const stored = selectedMeasuredSize(product.selectedSize);
+                const sizeId =
+                  dto.selectedSizeId ?? selectedSizeId(product.selectedSize);
+                if (!sizeId)
+                  throw new BadRequestException('Choose a size for the length');
+                data.selectedSize = await this.resolveSize(
                   tx,
-                  product.selectedSize,
+                  dto.categoryId ?? product.categoryId,
+                  sizeId,
                   dto.items ?? product.items,
+                  dto.selectedMeasurementMm ??
+                    (stored?.id === sizeId
+                      ? stored.selectedMeasurementMm
+                      : undefined),
                 );
-            }
-            return tx.product.update({
-              where: { id },
-              data,
-              include: productInclude,
-            });
-          }),
-        );
-        return {
-          result,
-          oldKeys: await this.unsharedKeys(
-            [
-              key ? oldKey : undefined,
-              previewKey ? oldPreviewKey : undefined,
-              backPreviewKey ? oldBackPreviewKey : undefined,
-              backImageKey ? oldBackImageKey : undefined,
-            ],
-            id,
-          ),
-        };
-      },
+              } else if (
+                !base &&
+                (dto.items !== undefined || dto.categoryId !== undefined)
+              ) {
+                // Preserve the stored size snapshot; never accept frontend limits.
+                const category = await tx.category.findUnique({
+                  where: { id: dto.categoryId ?? product.categoryId },
+                  select: { sizes: true },
+                });
+                if (Array.isArray(category?.sizes) && category.sizes.length > 0)
+                  await this.validateStoredSize(
+                    tx,
+                    product.selectedSize,
+                    dto.items ?? product.items,
+                  );
+              }
+              return tx.product.update({
+                where: { id },
+                data,
+                include: productInclude,
+              });
+            }),
+          );
+          return {
+            result,
+            oldKeys: await this.unsharedKeys(
+              [
+                key ? oldKey : undefined,
+                previewKey ? oldPreviewKey : undefined,
+                backPreviewKey ? oldBackPreviewKey : undefined,
+                backImageKey ? oldBackImageKey : undefined,
+                overlayImageKey || dto.removeOverlay
+                  ? oldOverlayImageKey
+                  : undefined,
+              ],
+              id,
+            ),
+          };
+        },
+      ),
     );
   }
 
@@ -555,6 +653,7 @@ export class ProductsService {
         select: {
           imageKey: true,
           backImageKey: true,
+          overlayImageKey: true,
           designPreviewKey: true,
           backDesignPreviewKey: true,
           items: { select: { customImageKey: true } },
@@ -566,6 +665,7 @@ export class ProductsService {
         [
           record.imageKey,
           record.backImageKey,
+          record.overlayImageKey,
           record.designPreviewKey,
           record.backDesignPreviewKey,
           ...record.items.map((item) => item.customImageKey),
@@ -593,13 +693,18 @@ export class ProductsService {
           OR: [
             { imageKey: { in: candidates } },
             { backImageKey: { in: candidates } },
+            { overlayImageKey: { in: candidates } },
           ],
         },
-        select: { imageKey: true, backImageKey: true },
+        select: { imageKey: true, backImageKey: true, overlayImageKey: true },
       }),
     );
     const used = new Set(
-      shared.flatMap((product) => [product.imageKey, product.backImageKey]),
+      shared.flatMap((product) => [
+        product.imageKey,
+        product.backImageKey,
+        product.overlayImageKey,
+      ]),
     );
     return candidates.filter((key) => !used.has(key));
   }
@@ -630,14 +735,15 @@ export class ProductsService {
       throw new ForbiddenException('Only admins can edit or delete products');
   }
 
-  private list(where: Prisma.ProductWhereInput) {
-    return this.query(() =>
+  private async list(where: Prisma.ProductWhereInput, viewer?: Viewer) {
+    const products = await this.query(() =>
       this.prisma.product.findMany({
         where,
         include: productInclude,
         orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       }),
     );
+    return products.filter((product) => visibleTo(product, viewer));
   }
 
   /**
@@ -766,6 +872,11 @@ export class ProductsService {
     items: StoredItem[],
     customKeys: (string | undefined)[] = [],
   ) {
+    // A phone case is one printed image: a library design or the customer's own photo.
+    if (category.builderType === CASE_BUILDER && items.length !== 1)
+      throw new BadRequestException(
+        'A phone case design needs exactly one design or photo',
+      );
     if (
       !items.length &&
       category.builderType &&
@@ -801,12 +912,12 @@ export class ProductsService {
       ...(category.designCategoryId ? [category.designCategoryId] : []),
     ];
     if (
-      !apparel &&
+      !acceptsUploads(category.builderType) &&
       (customKeys.length ||
         items.some((item) => item.customDesignIndex !== undefined))
     )
       throw new BadRequestException(
-        'Only apparel designs can include uploaded images',
+        'Only apparel and phone case designs can include uploaded images',
       );
     const calculated = await this.calculateItems(
       tx,
@@ -825,7 +936,7 @@ export class ProductsService {
           rotation: undefined,
         });
     else if (!apparel)
-      // Bouquets and gifts have one canvas; position is the layer order (back → front).
+      // Bouquets, gifts and cases have one canvas; position is the layer order (back → front).
       for (const item of calculated.items)
         Object.assign(item, { side: undefined });
     return calculated;
@@ -872,9 +983,10 @@ export class ProductsService {
   }
 
   /**
-   * The COMPANY product a design is made on, in the same category. APPAREL designs
-   * are always printed on one; other studios may build from components only. Stock is
-   * checked here but never taken: it only changes when an order is placed.
+   * The COMPANY product a design is made on, in the same category. APPAREL designs are
+   * always printed on one, and CASE designs on their phone model; other studios may build
+   * from components only. Stock is checked here but never taken: it only changes when an
+   * order is placed.
    */
   private async resolveBaseProduct(
     tx: Prisma.TransactionClient,
@@ -882,7 +994,9 @@ export class ProductsService {
     baseProductId: string | undefined,
   ) {
     if (!baseProductId) {
-      if (category.builderType === 'APPAREL')
+      if (category.builderType === CASE_BUILDER)
+        throw new BadRequestException('Choose your phone model');
+      if (needsBaseProduct(category.builderType))
         throw new BadRequestException('Choose the piece to design on');
       return undefined;
     }

@@ -46,6 +46,9 @@ export const baseProductSelect = {
   imageKey: true,
   backImageKey: true,
   printAreas: true,
+  // Phone case models: the brand and the overlay drawn above the artwork.
+  deviceBrand: true,
+  overlayImageKey: true,
   sizes: true,
   isActive: true,
 } satisfies Prisma.ProductSelect;

@@ -7,6 +7,8 @@ import { Prisma } from '../../generated/prisma/client.js';
  * production measurements:
  *
  * { "x": 0.3, "y": 0.28, "width": 0.4, "height": 0.42, "widthCm": 30, "heightCm": 40 }
+ *
+ * Phone cases round the area's corners: `radius` is a fraction (0–0.5) of its width.
  */
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -26,9 +28,13 @@ export function validatePrintArea(
   };
   if (!object(value)) invalid('must be an object or null');
   for (const key of Object.keys(value))
-    if (!['x', 'y', 'width', 'height', 'widthCm', 'heightCm'].includes(key))
+    if (
+      !['x', 'y', 'width', 'height', 'widthCm', 'heightCm', 'radius'].includes(
+        key,
+      )
+    )
       invalid(`unknown field ${key}`);
-  const { x, y, width, height, widthCm, heightCm } = value;
+  const { x, y, width, height, widthCm, heightCm, radius } = value;
   if (![x, y, width, height].every(fraction))
     invalid('x, y, width and height must be fractions from 0 to 1');
   const area = { x, y, width, height } as Record<string, number>;
@@ -48,11 +54,17 @@ export function validatePrintArea(
       invalid(`${key} must be a number of centimetres from 0 to 200`);
     area[key] = cm;
   }
+  if (radius !== undefined) {
+    if (!fraction(radius) || radius > 0.5)
+      invalid('radius must be a fraction of the width from 0 to 0.5');
+    area.radius = radius;
+  }
   return area;
 }
 
 /**
- * A product's print areas, keyed by side: { "front": { ... }, "back": { ... } }.
+ * A product's print areas, keyed by side: { "front": { ... }, "back": { ... } }. Phone
+ * case models may add "camera": the camera opening, which artwork never covers.
  * Returns undefined when nothing is configured.
  */
 export function validatePrintAreas(
@@ -62,10 +74,15 @@ export function validatePrintAreas(
   if (!object(value))
     throw new BadRequestException('printAreas must be an object or null');
   for (const key of Object.keys(value))
-    if (!['front', 'back'].includes(key))
+    if (!['front', 'back', 'camera'].includes(key))
       throw new BadRequestException(`Invalid printAreas: unknown side ${key}`);
   const front = validatePrintArea(value.front, 'front');
   const back = validatePrintArea(value.back, 'back');
-  if (!front && !back) return undefined;
-  return { ...(front ? { front } : {}), ...(back ? { back } : {}) };
+  const camera = validatePrintArea(value.camera, 'camera');
+  if (!front && !back && !camera) return undefined;
+  return {
+    ...(front ? { front } : {}),
+    ...(back ? { back } : {}),
+    ...(camera ? { camera } : {}),
+  };
 }

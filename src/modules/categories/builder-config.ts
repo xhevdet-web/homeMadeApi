@@ -38,9 +38,29 @@ export function validateBuilderConfig(
 /**
  * Builders whose designs are composed freely on a canvas, so every placed component
  * keeps its x/y/scale/rotation. APPAREL is two-sided (FRONT/BACK); BOUQUET and GIFT
- * have one canvas, and x/y are the item centre, normalised 0–1 within it.
+ * have one canvas, and x/y are the item centre, normalised 0–1 within it. CASE has one
+ * design, its centre normalised 0–1 within the model's printable area.
  */
-export const CANVAS_BUILDERS = ['APPAREL', 'BOUQUET', 'GIFT'] as const;
+export const CANVAS_BUILDERS = ['APPAREL', 'BOUQUET', 'GIFT', 'CASE'] as const;
+
+/**
+ * Phone cases: the customer picks a model (a COMPANY product with its own template) and
+ * puts exactly one design on it, from the library or their own photo.
+ */
+export const CASE_BUILDER = 'CASE';
+
+/** Builders printed on a COMPANY product chosen first: the garment, or the phone model. */
+export const BASE_PRODUCT_BUILDERS = ['APPAREL', 'CASE'] as const;
+
+/** Builders that offer the customer-upload SubCategory (CUSTOM_UPLOAD). */
+export const UPLOAD_BUILDERS = ['APPAREL', 'CASE'] as const;
+
+const listed = (list: readonly string[], builderType?: string | null) =>
+  list.includes(builderType ?? '');
+export const needsBaseProduct = (builderType?: string | null) =>
+  listed(BASE_PRODUCT_BUILDERS, builderType);
+export const acceptsUploads = (builderType?: string | null) =>
+  listed(UPLOAD_BUILDERS, builderType);
 
 export function isCanvasBuilder(builderType: string | null | undefined) {
   return (CANVAS_BUILDERS as readonly string[]).includes(builderType ?? '');

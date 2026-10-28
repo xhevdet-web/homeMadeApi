@@ -310,6 +310,68 @@ describe.skipIf(process.env.RUN_INVENTORY_DB_TESTS !== '1')(
       ).rejects.toThrow('sold out');
     });
 
+    it('takes one phone model from stock only when a case design is ordered', async () => {
+      const creator = await db.user.create({
+        data: {
+          firstName: 'Admin',
+          lastName: 'Test',
+          email: 'cases-admin@example.test',
+          passwordHash: 'test',
+          role: 'ADMIN',
+        },
+      });
+      await db.category.update({
+        where: { id: categoryId },
+        data: { builderType: 'CASE' },
+      });
+      const iphone = await db.product.create({
+        data: {
+          createdById: creator.id,
+          categoryId,
+          origin: 'COMPANY',
+          name: 'iPhone 14',
+          deviceBrand: 'APPLE',
+          price: 1500,
+          stock: 1,
+          imageKey: 'products/iphone-14.png',
+        },
+      });
+      const stockOf = async () =>
+        (await db.product.findUniqueOrThrow({ where: { id: iphone.id } }))
+          .stock;
+      const design = (name: string) =>
+        products.create(
+          {
+            categoryId,
+            name,
+            baseProductId: iphone.id,
+            items: [
+              {
+                subCategoryId: firstId,
+                quantity: 1,
+                x: 0.5,
+                y: 0.5,
+                scale: 1.2,
+              },
+            ],
+          },
+          customer,
+        );
+      const first = await design('My case');
+      const second = await design('Another case');
+      expect(first).toMatchObject({ price: 1500 + 150, basePrice: 1500 });
+      // Saving designs reserves nothing.
+      expect(await stockOf()).toBe(1);
+      const results = await Promise.allSettled([
+        place(first.id),
+        place(second.id),
+      ]);
+      expect(
+        results.filter((result) => result.status === 'fulfilled'),
+      ).toHaveLength(1);
+      expect(await stockOf()).toBe(0);
+    });
+
     it('atomically sells the last ready-made unit and keeps the purchased details after edits', async () => {
       const creator = await db.user.create({
         data: {

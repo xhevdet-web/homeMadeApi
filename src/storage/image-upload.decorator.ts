@@ -62,7 +62,12 @@ class MultipartFieldsInterceptor implements NestInterceptor {
         if (typeof value === 'string' && /^-?\d+$/.test(value))
           body[field] = Number(value);
       }
-      for (const field of ['isActive', 'trackStock', 'removeBackground']) {
+      for (const field of [
+        'isActive',
+        'trackStock',
+        'removeBackground',
+        'removeOverlay',
+      ]) {
         if (body[field] === 'true') body[field] = true;
         if (body[field] === 'false') body[field] = false;
       }
@@ -118,7 +123,7 @@ export function ImageUpload(
     properties.builderType = {
       type: 'string',
       nullable: true,
-      enum: ['JEWELRY', 'BOUQUET', 'GIFT', 'APPAREL'],
+      enum: ['JEWELRY', 'BOUQUET', 'GIFT', 'APPAREL', 'CASE'],
     };
     properties.builderConfig = {
       description:
@@ -278,7 +283,7 @@ export function ImageUpload(
       colorHex: { type: 'string', nullable: true, example: '#111111' },
       printAreas: {
         description:
-          'COMPANY apparel: { front?, back? } areas { x, y, width, height, widthCm?, heightCm? } as fractions of the images. Multipart: JSON.stringify(printAreas).',
+          'COMPANY apparel: { front?, back? } areas { x, y, width, height, widthCm?, heightCm? } as fractions of the images. Phone case models: front is the printable area (optional corner radius, 0–0.5 of its width) and camera the camera opening. Multipart: JSON.stringify(printAreas).',
         nullable: true,
         oneOf: [{ type: 'string' }, { type: 'object' }],
       },
@@ -286,6 +291,28 @@ export function ImageUpload(
         type: 'string',
         format: 'binary',
         description: 'COMPANY apparel: optional back canvas image.',
+      },
+      deviceBrand: {
+        type: 'string',
+        nullable: true,
+        example: 'APPLE',
+        description: 'COMPANY phone case models: the device maker.',
+      },
+      sortOrder: {
+        type: 'integer',
+        minimum: 0,
+        description: 'COMPANY catalog order within the category, lower first.',
+      },
+      removeBackground: {
+        type: 'boolean',
+        description:
+          'Upload only. false stores the product images untouched (phone case templates).',
+      },
+      overlayImage: {
+        type: 'string',
+        format: 'binary',
+        description:
+          'COMPANY phone case models: transparent PNG drawn above the artwork (case edge, camera), aligned with the template image. Stored untouched.',
       },
     });
   if (entity === 'product')
@@ -339,8 +366,8 @@ export function ImageUpload(
   const options = {
     limits: {
       fileSize: MAX_IMAGE_BYTES,
-      files: entity === 'product' ? 8 : 1,
-      fields: 20,
+      files: entity === 'product' ? 9 : 1,
+      fields: 24,
       fieldSize: 1024 * 1024,
     },
     fileFilter: (
@@ -385,6 +412,7 @@ export function ImageUpload(
               { name: 'backDesignPreview', maxCount: 1 },
               { name: 'customDesigns', maxCount: 4 },
               { name: 'backImage', maxCount: 1 },
+              { name: 'overlayImage', maxCount: 1 },
             ],
             options,
           )
