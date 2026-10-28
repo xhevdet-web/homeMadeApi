@@ -183,6 +183,53 @@ describe('Categories and SubCategories HTTP CRUD', () => {
       }),
     });
   });
+  it('lets jewelry share a jewelry library, but not another kind of studio', async () => {
+    category.findUnique.mockResolvedValue({
+      id: libraryId,
+      designCategoryId: null,
+      builderType: 'JEWELRY',
+    });
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .send({
+        name: 'Necklace',
+        builderType: 'JEWELRY',
+        designCategoryId: libraryId,
+      })
+      .expect(201);
+    expect(category.create.mock.calls[0][0].data).toMatchObject({
+      builderType: 'JEWELRY',
+      designCategoryId: libraryId,
+    });
+    category.findUnique.mockResolvedValue({
+      id: libraryId,
+      designCategoryId: null,
+      builderType: 'APPAREL',
+    });
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .send({
+        name: 'Necklace',
+        builderType: 'JEWELRY',
+        designCategoryId: libraryId,
+      })
+      .expect(400);
+    expect(response.body.message).toContain('same kind of studio');
+  });
+  it('keeps a library that others use from taking a library itself', async () => {
+    category.findUnique.mockResolvedValue({
+      id: libraryId,
+      designCategoryId: null,
+      builderType: 'JEWELRY',
+    });
+    category.findMany.mockResolvedValue([{ name: 'Bracelet' }]);
+    const response = await request(app.getHttpServer())
+      .patch('/api/v1/categories/' + id)
+      .send({ designCategoryId: libraryId })
+      .expect(400);
+    expect(response.body.message).toContain('Bracelet uses this category');
+    expect(category.update).not.toHaveBeenCalled();
+  });
   it('links a shared design library from JSON and FormData, and clears it', async () => {
     category.findUnique.mockResolvedValue({
       id: libraryId,

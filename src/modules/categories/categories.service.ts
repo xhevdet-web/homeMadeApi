@@ -36,7 +36,11 @@ export class CategoriesService {
   ) {}
 
   async create(dto: CreateCategoryDto, file?: Express.Multer.File) {
-    await this.validateDesignLibrary(undefined, dto.designCategoryId);
+    await this.validateDesignLibrary(
+      undefined,
+      dto.designCategoryId,
+      dto.builderType,
+    );
     const created = await this.images.save(file, 'categories', async (key) => ({
       result: await this.query(() =>
         this.prisma.category.create({
@@ -139,10 +143,13 @@ export class CategoriesService {
   }
 
   // A design library must exist, cannot be the category itself and cannot chain to
-  // another library, so a design always has exactly one owner category.
+  // another library, so a design always has exactly one owner category. It must also be
+  // the same kind of studio (e.g. a shared "Beads" category for Bracelets and Necklaces),
+  // or one without a builder type.
   private async validateDesignLibrary(
     id: string | undefined,
     libraryId?: string | null,
+    builderType?: string | null,
   ) {
     if (!libraryId) return;
     if (libraryId === id)
@@ -152,7 +159,7 @@ export class CategoriesService {
     const library = await this.query(() =>
       this.prisma.category.findUnique({
         where: { id: libraryId },
-        select: { id: true, designCategoryId: true },
+        select: { id: true, designCategoryId: true, builderType: true },
       }),
     );
     if (!library)
@@ -161,10 +168,40 @@ export class CategoriesService {
       throw new BadRequestException(
         'A design library cannot itself use another design library',
       );
+    // Nor may a category that other categories use as their library take one itself.
+    if (id) {
+      const users = await this.query(() =>
+        this.prisma.category.findMany({
+          where: { designCategoryId: id },
+          select: { name: true },
+          take: 1,
+        }),
+      );
+      if (users.length)
+        throw new BadRequestException(
+          `${users[0].name} uses this category as its design library, so it cannot use one itself`,
+        );
+    }
+    // An update that keeps its builder type is compared with the stored one.
+    const own =
+      builderType !== undefined || !id
+        ? builderType
+        : (
+            await this.query(() =>
+              this.prisma.category.findUnique({
+                where: { id },
+                select: { builderType: true },
+              }),
+            )
+          )?.builderType;
+    if (own && library.builderType && own !== library.builderType)
+      throw new BadRequestException(
+        'A design library must be the same kind of studio as the category, e.g. jewelry for jewelry',
+      );
   }
 
   async update(id: string, dto: UpdateCategoryDto, file?: Express.Multer.File) {
-    await this.validateDesignLibrary(id, dto.designCategoryId);
+    await this.validateDesignLibrary(id, dto.designCategoryId, dto.builderType);
     const previous = file || dto.sizes ? await this.findOne(id) : undefined;
     const updated = await this.images.save(file, 'categories', async (key) => ({
       result: await this.query(() =>
