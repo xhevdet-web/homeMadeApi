@@ -20,6 +20,7 @@ describe('Notifications HTTP', () => {
     findFirstOrThrow: vi.fn(),
     count: vi.fn(),
     updateMany: vi.fn(),
+    deleteMany: vi.fn(),
   };
   const prisma = { user, notification };
   const base = '/api/v1/notifications';
@@ -99,6 +100,21 @@ describe('Notifications HTTP', () => {
     expect(response.body).toHaveLength(1);
     expect(notification.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { userId: userA } }),
+    );
+  });
+
+  it('deletes the customer’s read notifications 48 hours after reading, before listing', async () => {
+    const before = Date.now();
+    await request(app.getHttpServer())
+      .get(base)
+      .set('Authorization', auth())
+      .expect(200);
+    const { where } = notification.deleteMany.mock.calls[0][0];
+    expect(where).toMatchObject({ userId: userA, isRead: true });
+    const cutoff = where.readAt.lt.getTime();
+    expect(Math.abs(before - 48 * 60 * 60 * 1000 - cutoff)).toBeLessThan(5000);
+    expect(notification.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+      notification.findMany.mock.invocationCallOrder[0],
     );
   });
 

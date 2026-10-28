@@ -3,7 +3,10 @@ import {
   Inject,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
+  type OnModuleDestroy,
+  type OnModuleInit,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { Prisma, type OrderStatus } from '../../generated/prisma/client.js';
@@ -11,6 +14,17 @@ import { ORDER_STATUS_COPY } from '../../mail/order-status-copy.js';
 
 /** The newest notifications a customer sees; older ones stay stored. */
 const PAGE_SIZE = 50;
+
+/** A read notification is deleted this long after it was read (48 hours). */
+export const READ_RETENTION_MS = 48 * 60 * 60 * 1000;
+/** How often expired read notifications are swept for every customer. */
+const SWEEP_EVERY_MS = 60 * 60 * 1000;
+
+/** Read notifications whose 48 hours have passed. */
+const expiredRead = (now = Date.now()) => ({
+  isRead: true,
+  readAt: { lt: new Date(now - READ_RETENTION_MS) },
+});
 
 const notificationSelect = {
   id: true,
@@ -27,12 +41,48 @@ const notificationSelect = {
  * A customer's in-app notification centre. Every read and change is scoped to the user id
  * the caller passes from the authenticated session, so one customer can never see or
  * change another's notifications. Notifications are written here by backend events only.
+ * Read notifications are deleted 48 hours after they were read: hourly for everyone, and
+ * for a customer whenever they open their list, so an expired one is never shown.
  */
 @Injectable()
-export class NotificationsService {
+export class NotificationsService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(NotificationsService.name);
+  private sweep?: ReturnType<typeof setInterval>;
+
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
-  findMine(userId: string) {
+  onModuleInit() {
+    this.sweep = setInterval(
+      () => void this.deleteExpiredRead(),
+      SWEEP_EVERY_MS,
+    );
+    // Never keeps the process (or a test run) alive on its own.
+    this.sweep.unref?.();
+  }
+
+  onModuleDestroy() {
+    clearInterval(this.sweep);
+  }
+
+  /** Deletes every read notification older than 48 hours since reading; never throws. */
+  async deleteExpiredRead() {
+    try {
+      const { count } = await this.prisma.notification.deleteMany({
+        where: expiredRead(),
+      });
+      return count;
+    } catch {
+      this.logger.error('Could not delete expired read notifications');
+      return 0;
+    }
+  }
+
+  async findMine(userId: string) {
+    await this.query(() =>
+      this.prisma.notification.deleteMany({
+        where: { userId, ...expiredRead() },
+      }),
+    );
     return this.query(() =>
       this.prisma.notification.findMany({
         where: { userId },
