@@ -31,8 +31,9 @@ export class UpdateCategoryDto {
 
   @Transform(emptyToNull)
   @IsOptional()
-  @IsIn(['JEWELRY', 'BOUQUET', 'GIFT', 'APPAREL', 'CASE'])
-  builderType?: 'JEWELRY' | 'BOUQUET' | 'GIFT' | 'APPAREL' | 'CASE' | null;
+  @IsIn(['JEWELRY', 'BOUQUET', 'GIFT', 'APPAREL', 'CASE', 'STICKER'])
+  builderType?:
+    'JEWELRY' | 'BOUQUET' | 'GIFT' | 'APPAREL' | 'CASE' | 'STICKER' | null;
 
   @IsOptional()
   @IsArray()

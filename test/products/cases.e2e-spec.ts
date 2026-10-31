@@ -33,6 +33,7 @@ describe('Phone case studio HTTP', () => {
     create: vi.fn(),
     findUnique: vi.fn(),
     findMany: vi.fn(),
+    groupBy: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
   });
@@ -460,14 +461,33 @@ describe('Phone case studio HTTP', () => {
     });
 
     it('never shows cases among other customers’ completed creations', async () => {
+      order.groupBy.mockResolvedValue([
+        { productId: caseDesign.id },
+        { productId: bracelet.id },
+      ]);
       order.findMany.mockResolvedValue([
-        { id: 'o1', updatedAt: new Date(), product: caseDesign },
-        { id: 'o2', updatedAt: new Date(), product: bracelet },
+        {
+          id: 'o1',
+          productId: caseDesign.id,
+          updatedAt: new Date(),
+          product: caseDesign,
+        },
+        {
+          id: 'o2',
+          productId: bracelet.id,
+          updatedAt: new Date(),
+          product: bracelet,
+        },
       ]);
       const response = await get(
         '/products/creations/from-others',
         strangerId,
       ).expect(200);
+      // The query itself leaves cases out, so five results stay five.
+      expect(order.groupBy.mock.calls[0][0].where.product.category).toEqual({
+        isActive: true,
+        OR: [{ builderType: null }, { builderType: { not: 'CASE' } }],
+      });
       expect(
         response.body.data.map(
           (entry: { product: { id: string } }) => entry.product.id,

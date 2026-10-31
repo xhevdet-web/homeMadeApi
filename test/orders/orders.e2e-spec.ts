@@ -242,6 +242,96 @@ describe('Orders HTTP', () => {
     });
   });
 
+  describe('sticker quantities', () => {
+    const stickerCategory = {
+      ...productRecord.category,
+      builderType: 'STICKER',
+    };
+    const readyMade = {
+      ...productRecord,
+      createdById: otherId,
+      createdBy: { role: 'ADMIN' },
+      origin: 'COMPANY',
+      isActive: true,
+      stock: 9,
+      price: 100,
+      items: [],
+      category: stickerCategory,
+    };
+
+    it('orders a ready-made sticker in a quantity of at least five', async () => {
+      product.findUnique.mockResolvedValue(readyMade);
+      product.updateMany.mockResolvedValue({ count: 1 });
+      await post({ ...body, quantity: 6 }).expect(201);
+      expect(product.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: productId,
+          origin: 'COMPANY',
+          isActive: true,
+          stock: { gte: 6 },
+        },
+        data: { stock: { decrement: 6 } },
+      });
+      expect(order.create.mock.calls[0][0].data).toMatchObject({
+        quantity: 6,
+        totalPrice: 600,
+      });
+    });
+
+    it('defaults a ready-made sticker to five and rejects fewer or too many', async () => {
+      product.findUnique.mockResolvedValue(readyMade);
+      product.updateMany.mockResolvedValue({ count: 1 });
+      await post(body).expect(201);
+      expect(order.create.mock.calls[0][0].data).toMatchObject({
+        quantity: 5,
+        totalPrice: 500,
+      });
+      await post({ ...body, quantity: 4 }).expect(400);
+      await post({ ...body, quantity: 1001 }).expect(400);
+      expect(order.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps every other product at one per order', async () => {
+      product.findUnique.mockResolvedValue({
+        ...readyMade,
+        category: productRecord.category,
+      });
+      product.updateMany.mockResolvedValue({ count: 1 });
+      await post({ ...body, quantity: 2 }).expect(400);
+      expect(order.create).not.toHaveBeenCalled();
+    });
+
+    it('needs at least five stickers in a studio set', async () => {
+      const set = (quantities: number[]) => ({
+        ...productRecord,
+        category: stickerCategory,
+        items: quantities.map((quantity, index) => ({
+          ...productRecord.items[0],
+          id: 'item-' + index,
+          quantity,
+          position: index,
+          unitPrice: 100,
+          subCategory: {
+            id: productRecord.items[0].subCategoryId,
+            name: 'Your own artwork',
+            stock: 0,
+            trackStock: false,
+            isActive: true,
+          },
+        })),
+      });
+      product.findUnique.mockResolvedValue(set([1, 1, 1, 1]));
+      await post(body).expect(400);
+      expect(order.create).not.toHaveBeenCalled();
+      product.findUnique.mockResolvedValue(set([2, 1, 1, 1]));
+      await post(body).expect(201);
+      expect(order.create.mock.calls[0][0].data).toMatchObject({
+        quantity: 1,
+        totalPrice: 500,
+      });
+    });
+  });
+
   const baseId = 'c7d1f0a4-2a71-46c6-bfba-a453d847044f';
   const printAreas = {
     front: {
@@ -849,6 +939,15 @@ describe('Orders HTTP', () => {
         where: { id, status: from },
         data: { status: to },
       });
+      // Only completion is timestamped; it orders the community gallery.
+      if (to === 'COMPLETED')
+        expect(order.update.mock.calls[0][0].data.completedAt).toBeInstanceOf(
+          Date,
+        );
+      else
+        expect(order.update.mock.calls[0][0].data).not.toHaveProperty(
+          'completedAt',
+        );
     },
   );
 

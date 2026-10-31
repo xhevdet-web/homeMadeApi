@@ -15,12 +15,24 @@ import type { UpdateCategoryDto } from './dto/update-category.dto.js';
 import {
   acceptsUploads,
   CASE_BUILDER,
+  STICKER_BUILDER,
   validateBuilderConfig,
 } from './builder-config.js';
 import {
   isJewelryCategory,
   normalizeCategorySizes,
 } from './jewelry-measurement.js';
+import { normalizeStickerSizes } from './sticker-sizes.js';
+
+/** Sizes in the shape the category's studio needs: sticker sizes, jewelry lengths, legacy. */
+function normalizeSizes(
+  sizes: Record<string, unknown>[],
+  builderType: string | null | undefined,
+) {
+  return builderType === STICKER_BUILDER
+    ? normalizeStickerSizes(sizes)
+    : normalizeCategorySizes(sizes, isJewelryCategory({ builderType }));
+}
 
 const orderBy = [
   { sortOrder: 'asc' },
@@ -55,9 +67,9 @@ export class CategoriesService {
               dto.sizes === null
                 ? Prisma.DbNull
                 : dto.sizes &&
-                  normalizeCategorySizes(
+                  normalizeSizes(
                     dto.sizes as unknown as Record<string, unknown>[],
-                    isJewelryCategory(dto),
+                    dto.builderType,
                   ),
             name: dto.name,
             description: dto.description,
@@ -111,12 +123,15 @@ export class CategoriesService {
 
   // APPAREL categories always offer "Your own design": customers upload their artwork
   // for this design's price (charged once per design). CASE categories offer "Your own
-  // photo", free by default. Admins may edit, reprice or deactivate it.
+  // photo", free by default. STICKER categories offer "Your own artwork": stickers are
+  // priced per sticker by their size, so its own price is not used. Admins may edit,
+  // reprice or deactivate it.
   private async ensureOwnDesign(
     categoryId: string,
     builderType: string | null,
   ) {
     const phoneCase = builderType === CASE_BUILDER;
+    const sticker = builderType === STICKER_BUILDER;
     const existing = await this.query(() =>
       this.prisma.subCategory.findMany({
         where: { categoryId, type: 'CUSTOM_UPLOAD' },
@@ -129,12 +144,18 @@ export class CategoriesService {
       this.prisma.subCategory.create({
         data: {
           categoryId,
-          name: phoneCase ? 'Your own photo' : 'Your own design',
-          description: phoneCase
-            ? 'Upload your own photo to print on your phone case.'
-            : 'Upload your own artwork to print on your piece.',
+          name: sticker
+            ? 'Your own artwork'
+            : phoneCase
+              ? 'Your own photo'
+              : 'Your own design',
+          description: sticker
+            ? 'Upload your own photo or artwork to print as stickers.'
+            : phoneCase
+              ? 'Upload your own photo to print on your phone case.'
+              : 'Upload your own artwork to print on your piece.',
           type: 'CUSTOM_UPLOAD',
-          price: phoneCase ? 0 : 500,
+          price: phoneCase || sticker ? 0 : 500,
           stock: 0,
           trackStock: false,
         },
@@ -217,20 +238,18 @@ export class CategoriesService {
               dto.builderConfig === null
                 ? Prisma.DbNull
                 : validateBuilderConfig(dto.builderConfig),
-            // Jewelry sizes are length ranges; the studio may come from the request or,
-            // when it leaves the studio out, from the stored category.
+            // Jewelry sizes are length ranges and sticker sizes have a shape; the studio
+            // may come from the request or, when it leaves the studio out, from the
+            // stored category.
             sizes:
               dto.sizes === null
                 ? Prisma.DbNull
                 : dto.sizes &&
-                  normalizeCategorySizes(
+                  normalizeSizes(
                     dto.sizes as unknown as Record<string, unknown>[],
-                    isJewelryCategory({
-                      builderType:
-                        dto.builderType !== undefined
-                          ? dto.builderType
-                          : previous?.builderType,
-                    }),
+                    dto.builderType !== undefined
+                      ? dto.builderType
+                      : previous?.builderType,
                   ),
             name: dto.name,
             description: dto.description,

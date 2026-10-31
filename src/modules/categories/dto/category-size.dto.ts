@@ -1,4 +1,6 @@
 import {
+  IsIn,
+  Min,
   IsString,
   IsNotEmpty,
   IsNumber,
@@ -8,6 +10,11 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { MAX_MEASUREMENT_MM } from '../jewelry-measurement.js';
+import {
+  MAX_STICKER_MM,
+  STICKER_SHAPES,
+  type StickerShape,
+} from '../sticker-sizes.js';
 
 const present = (_object: unknown, value: unknown) => value !== undefined;
 
@@ -45,6 +52,30 @@ export class CategorySizeDto {
   @IsPositive()
   @Max(MAX_MEASUREMENT_MM)
   defaultMeasurementMm?: number;
+
+  // ---- Stickers: shape, whole-millimetre size and price per sticker in cents ----
+
+  @ValidateIf(present)
+  @IsIn(STICKER_SHAPES)
+  shape?: StickerShape;
+
+  @ValidateIf(present)
+  @IsInt()
+  @IsPositive()
+  @Max(MAX_STICKER_MM)
+  widthMm?: number;
+
+  @ValidateIf(present)
+  @IsInt()
+  @IsPositive()
+  @Max(MAX_STICKER_MM)
+  heightMm?: number;
+
+  @ValidateIf(present)
+  @IsInt()
+  @Min(0)
+  @Max(2147483647)
+  price?: number;
 
   // ---- Legacy: one measurement and a component count ----
 

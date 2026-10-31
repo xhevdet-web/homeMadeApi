@@ -11,6 +11,7 @@ import { setupApp } from '../../src/config/setup-app.js';
 const delegate = () => ({
   findUnique: vi.fn(),
   findMany: vi.fn(),
+  groupBy: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
@@ -197,28 +198,38 @@ describe('Products HTTP CRUD', () => {
     ['ok', undefined, 'Choose a size of Black Essential Hoodie'],
     ['ok', 'XXL', 'Black Essential Hoodie is not available in size XXL'],
     ['ok', 'XL', 'Black Essential Hoodie in size XL is sold out'],
-  ])('rejects apparel on an unavailable base (%s, size %s)', async (state, size, message) => {
-    apparelCategory();
-    product.findUnique.mockResolvedValue(
-      state === 'missing' ? null
-        : state === 'other-category' ? baseProduct({ categoryId: otherId })
-          : state === 'customer-design' ? baseProduct({ origin: 'CUSTOMER' })
-            : state === 'inactive' ? baseProduct({ isActive: false }) : baseProduct(),
-    );
-    const response = await save({
-      ...body,
-      ...(state ? { baseProductId: baseId } : {}),
-      ...(size ? { selectedSizeId: size } : {}),
-      items: [{ subCategoryId, quantity: 1, ...placed }],
-    }).expect(400);
-    expect(response.body.message).toBe(message);
-    expect(product.create).not.toHaveBeenCalled();
-  });
+  ])(
+    'rejects apparel on an unavailable base (%s, size %s)',
+    async (state, size, message) => {
+      apparelCategory();
+      product.findUnique.mockResolvedValue(
+        state === 'missing'
+          ? null
+          : state === 'other-category'
+            ? baseProduct({ categoryId: otherId })
+            : state === 'customer-design'
+              ? baseProduct({ origin: 'CUSTOMER' })
+              : state === 'inactive'
+                ? baseProduct({ isActive: false })
+                : baseProduct(),
+      );
+      const response = await save({
+        ...body,
+        ...(state ? { baseProductId: baseId } : {}),
+        ...(size ? { selectedSizeId: size } : {}),
+        items: [{ subCategoryId, quantity: 1, ...placed }],
+      }).expect(400);
+      expect(response.body.message).toBe(message);
+      expect(product.create).not.toHaveBeenCalled();
+    },
+  );
 
   it('requires a placement for every apparel design', async () => {
     apparelCategory();
     product.findUnique.mockResolvedValue(baseProduct());
-    await save({ ...body, baseProductId: baseId, selectedSizeId: 'L' }).expect(400);
+    await save({ ...body, baseProductId: baseId, selectedSizeId: 'L' }).expect(
+      400,
+    );
     expect(product.create).not.toHaveBeenCalled();
   });
 
@@ -226,9 +237,19 @@ describe('Products HTTP CRUD', () => {
     apparelCategory({ designCategoryId: libraryId });
     product.findUnique.mockResolvedValue(baseProduct());
     subCategory.findMany.mockResolvedValue([
-      { ...record.subCategory, categoryId: libraryId, price: 75, isActive: true },
+      {
+        ...record.subCategory,
+        categoryId: libraryId,
+        price: 75,
+        isActive: true,
+      },
     ]);
-    const design = { ...body, baseProductId: baseId, selectedSizeId: 'L', items: [{ subCategoryId, quantity: 1, ...placed }] };
+    const design = {
+      ...body,
+      baseProductId: baseId,
+      selectedSizeId: 'L',
+      items: [{ subCategoryId, quantity: 1, ...placed }],
+    };
     await save(design).expect(201);
     subCategory.findMany.mockResolvedValue([
       { ...record.subCategory, categoryId: otherId, price: 75, isActive: true },
@@ -244,67 +265,182 @@ describe('Products HTTP CRUD', () => {
   });
 
   it('never stores placements on jewelry designs', async () => {
-    category.findUnique.mockResolvedValue({ ...record.category, builderType: 'JEWELRY', options: null });
-    await save({ ...body, items: [{ subCategoryId, quantity: 20, ...placed }] }).expect(201);
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      builderType: 'JEWELRY',
+      options: null,
+    });
+    await save({
+      ...body,
+      items: [{ subCategoryId, quantity: 20, ...placed }],
+    }).expect(201);
     const item = product.create.mock.calls[0][0].data.items.create[0];
     expect(item.side).toBeUndefined();
     expect(item.x).toBeUndefined();
   });
 
-  it.each(['BOUQUET', 'GIFT'])('stores one-canvas placements and layer order for %s designs', async (builderType) => {
-    category.findUnique.mockResolvedValue({ ...record.category, builderType, options: null });
-    await save({ ...body, items: [
-      { subCategoryId, quantity: 1, position: 0, ...placed },
-      { subCategoryId, quantity: 1, position: 1, x: 0.3, y: 0.6, scale: 0.8, rotation: 0 },
-    ] }).expect(201);
-    const items = product.create.mock.calls[0][0].data.items.create;
-    expect(items[0]).toMatchObject({ x: 0.5, y: 0.4, scale: 1.2, rotation: 15, position: 0 });
-    expect(items[0].side).toBeUndefined();
-    expect(items[1]).toMatchObject({ x: 0.3, y: 0.6, position: 1 });
-    product.create.mockClear();
-    await save({ ...body, items: [{ subCategoryId, quantity: 1 }] }).expect(400);
-    expect(product.create).not.toHaveBeenCalled();
-  });
+  it.each(['BOUQUET', 'GIFT'])(
+    'stores one-canvas placements and layer order for %s designs',
+    async (builderType) => {
+      category.findUnique.mockResolvedValue({
+        ...record.category,
+        builderType,
+        options: null,
+      });
+      await save({
+        ...body,
+        items: [
+          { subCategoryId, quantity: 1, position: 0, ...placed },
+          {
+            subCategoryId,
+            quantity: 1,
+            position: 1,
+            x: 0.3,
+            y: 0.6,
+            scale: 0.8,
+            rotation: 0,
+          },
+        ],
+      }).expect(201);
+      const items = product.create.mock.calls[0][0].data.items.create;
+      expect(items[0]).toMatchObject({
+        x: 0.5,
+        y: 0.4,
+        scale: 1.2,
+        rotation: 15,
+        position: 0,
+      });
+      expect(items[0].side).toBeUndefined();
+      expect(items[1]).toMatchObject({ x: 0.3, y: 0.6, position: 1 });
+      product.create.mockClear();
+      await save({ ...body, items: [{ subCategoryId, quantity: 1 }] }).expect(
+        400,
+      );
+      expect(product.create).not.toHaveBeenCalled();
+    },
+  );
 
-  const text = { id: 't1', text: '  Thank you ', x: 0.5, y: 0.7, scale: 1, rotation: 0, color: '#2D3250', font: 'SCRIPT' };
+  const text = {
+    id: 't1',
+    text: '  Thank you ',
+    x: 0.5,
+    y: 0.7,
+    scale: 1,
+    rotation: 0,
+    color: '#2D3250',
+    font: 'SCRIPT',
+  };
 
   it('saves a free bouquet on a base product: any positions, base price included, no size needed', async () => {
-    category.findUnique.mockResolvedValue({ ...record.category, builderType: 'BOUQUET', options: null });
-    product.findUnique.mockResolvedValue(baseProduct({ name: 'Wrapped Bouquet', price: 1200, sizes: null, stock: 3 }));
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      builderType: 'BOUQUET',
+      options: null,
+    });
+    product.findUnique.mockResolvedValue(
+      baseProduct({
+        name: 'Wrapped Bouquet',
+        price: 1200,
+        sizes: null,
+        stock: 3,
+      }),
+    );
     const pieces = [
-      { subCategoryId, quantity: 1, position: 0, x: 0.12, y: 0.9, scale: 2.4, rotation: -40 },
-      { subCategoryId, quantity: 1, position: 1, x: 0.88, y: 0.08, scale: 0.3, rotation: 170 },
+      {
+        subCategoryId,
+        quantity: 1,
+        position: 0,
+        x: 0.12,
+        y: 0.9,
+        scale: 2.4,
+        rotation: -40,
+      },
+      {
+        subCategoryId,
+        quantity: 1,
+        position: 1,
+        x: 0.88,
+        y: 0.08,
+        scale: 0.3,
+        rotation: 170,
+      },
     ];
     await save({ ...body, baseProductId: baseId, items: pieces }).expect(201);
     const data = product.create.mock.calls[0][0].data;
-    expect(data).toMatchObject({ baseProductId: baseId, basePrice: 1200, price: 1200 + 2 * 75 });
+    expect(data).toMatchObject({
+      baseProductId: baseId,
+      basePrice: 1200,
+      price: 1200 + 2 * 75,
+    });
     expect(data.selectedSize).toBeUndefined();
-    expect(data.items.create.map(({ x, y, scale, rotation, position }: Record<string, number>) =>
-      ({ x, y, scale, rotation, position }))).toEqual(pieces.map(({ x, y, scale, rotation, position }) =>
-      ({ x, y, scale, rotation, position })));
+    expect(
+      data.items.create.map(
+        ({ x, y, scale, rotation, position }: Record<string, number>) => ({
+          x,
+          y,
+          scale,
+          rotation,
+          position,
+        }),
+      ),
+    ).toEqual(
+      pieces.map(({ x, y, scale, rotation, position }) => ({
+        x,
+        y,
+        scale,
+        rotation,
+        position,
+      })),
+    );
   });
 
   it('stores personalised text on gift and bouquet designs only', async () => {
     for (const [index, builderType] of ['GIFT', 'BOUQUET'].entries()) {
-      category.findUnique.mockResolvedValue({ ...record.category, builderType, options: null });
-      await save({ ...body, items: [{ subCategoryId, quantity: 1, ...placed }], textLayers: [text] })
-        .expect(201);
-      expect(product.create.mock.calls[index][0].data.textLayers).toEqual([{ ...text, text: 'Thank you' }]);
+      category.findUnique.mockResolvedValue({
+        ...record.category,
+        builderType,
+        options: null,
+      });
+      await save({
+        ...body,
+        items: [{ subCategoryId, quantity: 1, ...placed }],
+        textLayers: [text],
+      }).expect(201);
+      expect(product.create.mock.calls[index][0].data.textLayers).toEqual([
+        { ...text, text: 'Thank you' },
+      ]);
     }
-    category.findUnique.mockResolvedValue({ ...record.category, builderType: 'JEWELRY', options: null });
-    const response = await save({ ...body, items: [{ subCategoryId, quantity: 1, ...placed }], textLayers: [text] })
-      .expect(400);
-    expect(response.body.message).toBe('Only gift, bouquet and apparel designs can include text');
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      builderType: 'JEWELRY',
+      options: null,
+    });
+    const response = await save({
+      ...body,
+      items: [{ subCategoryId, quantity: 1, ...placed }],
+      textLayers: [text],
+    }).expect(400);
+    expect(response.body.message).toBe(
+      'Only gift, bouquet and apparel designs can include text',
+    );
   });
 
   it('keeps text weight and italic, dropping the regular defaults', async () => {
-    category.findUnique.mockResolvedValue({ ...record.category, builderType: 'GIFT', options: null });
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      builderType: 'GIFT',
+      options: null,
+    });
     const styled = [
       { ...text, id: 'bold', weight: 'BOLD', italic: true },
       { ...text, id: 'light', weight: 'LIGHT', italic: false },
       { ...text, id: 'plain', weight: 'REGULAR' },
     ];
-    await save({ ...body, items: [{ subCategoryId, quantity: 1, ...placed }], textLayers: styled }).expect(201);
+    await save({
+      ...body,
+      items: [{ subCategoryId, quantity: 1, ...placed }],
+      textLayers: styled,
+    }).expect(201);
     expect(product.create.mock.calls[0][0].data.textLayers).toEqual([
       { ...text, text: 'Thank you', id: 'bold', weight: 'BOLD', italic: true },
       { ...text, text: 'Thank you', id: 'light', weight: 'LIGHT' },
@@ -315,12 +451,25 @@ describe('Products HTTP CRUD', () => {
   it('stores apparel text with the side it is printed on', async () => {
     apparelCategory();
     product.findUnique.mockResolvedValue(baseProduct());
-    const design = { ...body, baseProductId: baseId, selectedSizeId: 'L', items: [{ subCategoryId, quantity: 1, ...placed }] };
+    const design = {
+      ...body,
+      baseProductId: baseId,
+      selectedSizeId: 'L',
+      items: [{ subCategoryId, quantity: 1, ...placed }],
+    };
     const missing = await save({ ...design, textLayers: [text] }).expect(400);
-    expect(missing.body.message).toBe('Apparel text must say which side it is printed on');
-    await save({ ...design, textLayers: [{ ...text, side: 'MIDDLE' }] }).expect(400);
-    await save({ ...design, textLayers: [{ ...text, side: 'BACK' }] }).expect(201);
-    expect(product.create.mock.calls[0][0].data.textLayers).toEqual([{ ...text, text: 'Thank you', side: 'BACK' }]);
+    expect(missing.body.message).toBe(
+      'Apparel text must say which side it is printed on',
+    );
+    await save({ ...design, textLayers: [{ ...text, side: 'MIDDLE' }] }).expect(
+      400,
+    );
+    await save({ ...design, textLayers: [{ ...text, side: 'BACK' }] }).expect(
+      201,
+    );
+    expect(product.create.mock.calls[0][0].data.textLayers).toEqual([
+      { ...text, text: 'Thank you', side: 'BACK' },
+    ]);
   });
 
   it.each([
@@ -333,8 +482,16 @@ describe('Products HTTP CRUD', () => {
     [text, text],
     Array.from({ length: 7 }, (_, index) => ({ ...text, id: 't' + index })),
   ])('rejects invalid text layers %#', async (...layers) => {
-    category.findUnique.mockResolvedValue({ ...record.category, builderType: 'GIFT', options: null });
-    await save({ ...body, items: [{ subCategoryId, quantity: 1, ...placed }], textLayers: layers }).expect(400);
+    category.findUnique.mockResolvedValue({
+      ...record.category,
+      builderType: 'GIFT',
+      options: null,
+    });
+    await save({
+      ...body,
+      items: [{ subCategoryId, quantity: 1, ...placed }],
+      textLayers: layers,
+    }).expect(400);
     expect(product.create).not.toHaveBeenCalled();
   });
 
@@ -488,24 +645,32 @@ describe('Products HTTP CRUD', () => {
 
   it('returns five completed custom creations from other users without order customer data', async () => {
     const completedAt = new Date('2026-10-18T12:00:00.000Z');
+    order.groupBy.mockResolvedValue([{ productId: id }]);
     order.findMany.mockResolvedValue([
-      { id: otherId, updatedAt: completedAt, product: record },
+      { id: otherId, productId: id, updatedAt: completedAt, product: record },
     ]);
     const response = await request(app.getHttpServer())
       .get(base + '/creations/from-others')
       .set('Authorization', 'Bearer ' + token)
       .expect(200);
-    expect(order.findMany.mock.calls[0][0]).toMatchObject({
+    // Completed orders placed by someone else, latest completion first, five designs.
+    expect(order.groupBy.mock.calls[0][0]).toMatchObject({
+      by: ['productId'],
       where: {
         status: 'COMPLETED',
+        completedAt: { not: null },
+        userId: { not: userId },
         product: {
           createdById: { not: userId },
           origin: 'CUSTOMER',
         },
       },
-      distinct: ['productId'],
-      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+      orderBy: [{ _max: { completedAt: 'desc' } }, { productId: 'asc' }],
       take: 5,
+    });
+    expect(order.findMany.mock.calls[0][0]).toMatchObject({
+      where: { productId: { in: [id] }, userId: { not: userId } },
+      orderBy: [{ completedAt: 'desc' }, { id: 'asc' }],
     });
     expect(response.body.data[0]).toMatchObject({
       completedOrderId: otherId,
@@ -525,20 +690,176 @@ describe('Products HTTP CRUD', () => {
   });
 
   it('filters creations from others by category', async () => {
-    order.findMany.mockResolvedValue([]);
+    order.groupBy.mockResolvedValue([]);
     await request(app.getHttpServer())
       .get(base + '/creations/from-others?categoryId=' + categoryId)
       .set('Authorization', 'Bearer ' + token)
       .expect(200);
-    expect(order.findMany.mock.calls[0][0].where.product).toEqual({
+    expect(order.groupBy.mock.calls[0][0].where.product).toMatchObject({
       createdById: { not: userId },
       origin: 'CUSTOMER',
       categoryId,
     });
+    // Nothing ranked: no orders are read.
+    expect(order.findMany).not.toHaveBeenCalled();
     await request(app.getHttpServer())
       .get(base + '/creations/from-others?categoryId=bad')
       .set('Authorization', 'Bearer ' + token)
       .expect(400);
+  });
+
+  it('shows a design ordered several times once, with its latest order', async () => {
+    const productB = 'c4dfc7b7-2a71-46c6-bfba-a453d847044f';
+    order.groupBy.mockResolvedValue([
+      { productId: productB },
+      { productId: id },
+    ]);
+    order.findMany.mockResolvedValue([
+      { id: 'o2', productId: id, updatedAt: new Date(), product: record },
+      {
+        id: 'o3',
+        productId: productB,
+        updatedAt: new Date(),
+        product: { ...record, id: productB },
+      },
+      { id: 'o1', productId: id, updatedAt: new Date(), product: record },
+    ]);
+    const response = await request(app.getHttpServer())
+      .get(base + '/creations/from-others')
+      .set('Authorization', 'Bearer ' + token)
+      .expect(200);
+    expect(
+      response.body.data.map(
+        (entry: { completedOrderId: string }) => entry.completedOrderId,
+      ),
+    ).toEqual(['o3', 'o2']);
+  });
+
+  describe('community gallery', () => {
+    const gifts = { id: categoryId, name: 'Gifts' };
+    const keychains = {
+      id: 'e4dfc7b7-2a71-46c6-bfba-a453d847044f',
+      name: 'Keychains',
+    };
+    const completedAt = new Date('2026-10-30T09:00:00.000Z');
+    const gallery = (query = '') =>
+      request(app.getHttpServer())
+        .get(base + '/creations/community' + query)
+        .set('Authorization', 'Bearer ' + token);
+
+    it('lists categories with creations from others and the latest of the first', async () => {
+      category.findMany.mockResolvedValue([gifts, keychains]);
+      order.groupBy.mockResolvedValue([{ productId: id }]);
+      order.findMany.mockResolvedValue([
+        {
+          id: otherId,
+          productId: id,
+          completedAt,
+          designPreviewKey: 'orders/' + otherId + '/preview.webp',
+          product: {
+            id,
+            name: 'Birthday Box',
+            designPreviewKey: 'products/preview.webp',
+          },
+        },
+      ]);
+      const response = await gallery().expect(200);
+      // Categories are found through orders the signed-in viewer may see.
+      expect(category.findMany.mock.calls[0][0]).toMatchObject({
+        where: {
+          products: {
+            some: {
+              orders: {
+                some: {
+                  status: 'COMPLETED',
+                  userId: { not: userId },
+                  product: {
+                    origin: 'CUSTOMER',
+                    category: { isActive: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+        select: { id: true, name: true },
+      });
+      expect(order.groupBy.mock.calls[0][0]).toMatchObject({
+        where: {
+          status: 'COMPLETED',
+          userId: { not: userId },
+          product: { categoryId },
+        },
+        take: 5,
+      });
+      expect(response.body).toEqual({
+        categories: [gifts, keychains],
+        categoryId,
+        creations: [
+          {
+            id: otherId,
+            productId: id,
+            name: 'Birthday Box',
+            categoryId,
+            categoryName: 'Gifts',
+            designPreviewKey: 'orders/' + otherId + '/preview.webp',
+            // The order's own copy wins over the design's current preview.
+            designPreviewUrl: expect.stringMatching(
+              new RegExp('orders/' + otherId + '/preview\\.webp$'),
+            ),
+            completedAt: completedAt.toISOString(),
+          },
+        ],
+      });
+      // A picture card only: nothing about the customer, the order or its price.
+      const card = JSON.stringify(response.body.creations[0]);
+      for (const field of [
+        'user',
+        'createdBy',
+        'firstName',
+        'email',
+        'address',
+        'orderNumber',
+        'totalPrice',
+        'price',
+      ])
+        expect(card).not.toContain('"' + field + '"');
+    });
+
+    it('reads the requested category, and falls back when it has nothing to show', async () => {
+      category.findMany.mockResolvedValue([gifts, keychains]);
+      order.groupBy.mockResolvedValue([]);
+      await gallery('?categoryId=' + keychains.id).expect(200);
+      expect(order.groupBy.mock.calls[0][0].where.product.categoryId).toBe(
+        keychains.id,
+      );
+      const response = await gallery(
+        '?categoryId=f9dfc7b7-2a71-46c6-bfba-a453d847044f',
+      ).expect(200);
+      expect(order.groupBy.mock.calls[1][0].where.product.categoryId).toBe(
+        categoryId,
+      );
+      expect(response.body.categoryId).toBe(categoryId);
+      await gallery('?categoryId=bad').expect(400);
+    });
+
+    it('is empty without any eligible category', async () => {
+      category.findMany.mockResolvedValue([]);
+      const response = await gallery().expect(200);
+      expect(response.body).toEqual({
+        categories: [],
+        categoryId: null,
+        creations: [],
+      });
+      expect(order.groupBy).not.toHaveBeenCalled();
+    });
+
+    it('requires authentication', async () => {
+      await request(app.getHttpServer())
+        .get(base + '/creations/community')
+        .expect(401);
+      expect(category.findMany).not.toHaveBeenCalled();
+    });
   });
 
   it('requires authentication for creations from others', async () => {
@@ -694,7 +1015,13 @@ describe('Products HTTP CRUD', () => {
   it('filters products by category, origin, creator, status and search in the database', async () => {
     await request(app.getHttpServer())
       .get(base)
-      .query({ categoryId, origin: 'COMPANY', createdById: userId, isActive: 'true', search: ' hoodie ' })
+      .query({
+        categoryId,
+        origin: 'COMPANY',
+        createdById: userId,
+        isActive: 'true',
+        search: ' hoodie ',
+      })
       .expect(200);
     const search = { contains: 'hoodie', mode: 'insensitive' };
     expect(product.findMany.mock.calls[0][0].where).toEqual({
@@ -704,8 +1031,15 @@ describe('Products HTTP CRUD', () => {
       isActive: true,
       OR: [{ name: search }, { description: search }, { color: search }],
     });
-    for (const query of ['categoryId=bad', 'origin=READY_MADE', 'isActive=yes', 'unknown=1'])
-      await request(app.getHttpServer()).get(base + '?' + query).expect(400);
+    for (const query of [
+      'categoryId=bad',
+      'origin=READY_MADE',
+      'isActive=yes',
+      'unknown=1',
+    ])
+      await request(app.getHttpServer())
+        .get(base + '?' + query)
+        .expect(400);
     expect(product.findMany).toHaveBeenCalledTimes(1);
   });
 

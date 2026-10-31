@@ -1,5 +1,8 @@
 import {
   IsEnum,
+  IsInt,
+  Max,
+  Min,
   IsOptional,
   IsString,
   IsUUID,
@@ -18,6 +21,16 @@ export class CreateOrderDto {
   @IsString()
   @Length(1, 20)
   size?: string;
+
+  /**
+   * Ready-made stickers: how many to order (at least 5). Every other product is ordered
+   * one at a time; a design carries its own quantities.
+   */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  quantity?: number;
 
   @IsEnum(PaymentType)
   paymentType!: PaymentType;

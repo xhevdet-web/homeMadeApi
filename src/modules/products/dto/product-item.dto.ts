@@ -58,7 +58,7 @@ export class ProductItemDto {
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsInt()
   @Min(0)
-  @Max(3)
+  @Max(4)
   customDesignIndex?: number;
 
   /** Degrees, clockwise. */

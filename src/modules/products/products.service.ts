@@ -41,9 +41,20 @@ import {
   CASE_BUILDER,
   isCanvasBuilder,
   needsBaseProduct,
+  STICKER_BUILDER,
   TEXT_BUILDERS,
 } from '../categories/builder-config.js';
+import {
+  MAX_STICKER_DESIGNS,
+  MAX_STICKERS_PER_DESIGN,
+  stickerSize,
+  type StickerSize,
+} from '../categories/sticker-sizes.js';
 import type { TextLayerDto } from './dto/text-layer.dto.js';
+import {
+  communityOrderWhere,
+  recentCommunityOrders,
+} from './community-creations.js';
 import {
   giftPackagingColorSelect,
   giftPackagingFields,
@@ -178,6 +189,16 @@ export class ProductsService {
                   tx,
                   dto.categoryId,
                 );
+                // A sticker set is priced per sticker by its size, so the size comes first.
+                const sticker =
+                  !company && category.builderType === STICKER_BUILDER
+                    ? await this.stickerSizeOf(
+                        tx,
+                        dto.categoryId,
+                        dto.selectedSizeId,
+                        dto.selectedMeasurementMm,
+                      )
+                    : undefined;
                 const calculated = company
                   ? await this.readyMadeItems(tx, dto.categoryId, dto.items)
                   : await this.calculateCustomItems(
@@ -185,6 +206,7 @@ export class ProductsService {
                       category,
                       dto.items ?? [],
                       customKeys,
+                      sticker,
                     );
                 const textLayers = this.textLayers(category, dto.textLayers);
                 const base = company
@@ -208,17 +230,19 @@ export class ProductsService {
                   throw new BadRequestException(
                     'Product quantity or price exceeds the supported integer range',
                   );
-                const selectedSize = base?.sizes.length
-                  ? this.resolveBaseSize(base, dto.selectedSizeId)
-                  : dto.selectedSizeId === undefined
-                    ? undefined
-                    : await this.resolveSize(
-                        tx,
-                        dto.categoryId,
-                        dto.selectedSizeId,
-                        dto.items ?? [],
-                        dto.selectedMeasurementMm,
-                      );
+                const selectedSize = sticker
+                  ? ({ ...sticker } satisfies Prisma.InputJsonObject)
+                  : base?.sizes.length
+                    ? this.resolveBaseSize(base, dto.selectedSizeId)
+                    : dto.selectedSizeId === undefined
+                      ? undefined
+                      : await this.resolveSize(
+                          tx,
+                          dto.categoryId,
+                          dto.selectedSizeId,
+                          dto.items ?? [],
+                          dto.selectedMeasurementMm,
+                        );
                 if (
                   dto.selectedMeasurementMm !== undefined &&
                   dto.selectedSizeId === undefined
@@ -267,8 +291,8 @@ export class ProductsService {
 
   /**
    * Printed apparel artwork must keep transparency, so its uploads are PNG only. Phone
-   * cases print a full-bleed photo, so they also accept JPEG and WebP. The file signature
-   * is checked against the declared type when each file is stored.
+   * cases and stickers print a full-bleed photo, so they also accept JPEG and WebP. The
+   * file signature is checked against the declared type when each file is stored.
    */
   private async checkUploadTypes(
     categoryId: string,
@@ -281,7 +305,10 @@ export class ProductsService {
         select: { builderType: true },
       }),
     );
-    if (category?.builderType !== CASE_BUILDER)
+    if (
+      category?.builderType !== CASE_BUILDER &&
+      category?.builderType !== STICKER_BUILDER
+    )
       throw new BadRequestException('Uploaded designs must be PNG images');
   }
 
@@ -316,27 +343,14 @@ export class ProductsService {
     categoryId?: string,
   ) {
     const orders = await this.query(() =>
-      this.prisma.order.findMany({
-        where: {
-          status: 'COMPLETED',
-          product: {
-            createdById: { not: user.id },
-            origin: 'CUSTOMER',
-            categoryId,
-          },
-        },
-        select: {
-          id: true,
-          updatedAt: true,
-          product: { include: productInclude },
-        },
-        distinct: ['productId'],
-        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
-        take: 5,
+      recentCommunityOrders(this.prisma, user.id, categoryId, {
+        id: true,
+        updatedAt: true,
+        product: { include: productInclude },
       }),
     );
     return {
-      // Phone cases carry personal photos and are never shown to other customers.
+      // Phone cases are already left out by the query; this keeps the rule explicit.
       data: orders
         .filter(({ product }) => visibleTo(product, undefined))
         .map(({ id, updatedAt, product }) => ({
@@ -344,6 +358,54 @@ export class ProductsService {
           completedOrderUpdatedAt: updatedAt,
           product,
         })),
+    };
+  }
+
+  /**
+   * The Home community gallery: the categories that have creations to show the viewer, and
+   * the latest creations of one of them (the requested one when it has any, else the
+   * first). Only what a picture card needs is returned: no customer, order or price data.
+   */
+  async findCommunityGallery(user: AuthenticatedUser, categoryId?: string) {
+    const categories = await this.query(() =>
+      this.prisma.category.findMany({
+        where: {
+          products: {
+            some: { orders: { some: communityOrderWhere(user.id) } },
+          },
+        },
+        select: { id: true, name: true },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      }),
+    );
+    const selected =
+      categories.find((category) => category.id === categoryId) ??
+      categories[0];
+    if (!selected) return { categories, categoryId: null, creations: [] };
+    const orders = await this.query(() =>
+      recentCommunityOrders(this.prisma, user.id, selected.id, {
+        id: true,
+        completedAt: true,
+        designPreviewKey: true,
+        product: {
+          select: { id: true, name: true, designPreviewKey: true },
+        },
+      }),
+    );
+    return {
+      categories,
+      categoryId: selected.id,
+      creations: orders.map((order) => ({
+        id: order.id,
+        productId: order.product.id,
+        name: order.product.name,
+        categoryId: selected.id,
+        categoryName: selected.name,
+        // The order keeps its own copy of the preview as it was when ordered.
+        designPreviewKey:
+          order.designPreviewKey ?? order.product.designPreviewKey,
+        completedAt: order.completedAt,
+      })),
     };
   }
 
@@ -443,6 +505,18 @@ export class ProductsService {
                   ? undefined
                   : this.textLayers(category, dto.textLayers);
               const company = product.origin === 'COMPANY';
+              const sticker =
+                !company && category.builderType === STICKER_BUILDER
+                  ? (stickerSize(product.selectedSize) ?? undefined)
+                  : undefined;
+              if (
+                sticker &&
+                (dto.selectedSizeId !== undefined ||
+                  dto.selectedMeasurementMm !== undefined)
+              )
+                throw new BadRequestException(
+                  'A sticker set keeps its shape and size; create a new set for another size',
+                );
               if (
                 !company &&
                 (COMPANY_FIELDS.some((field) => dto[field] !== undefined) ||
@@ -555,6 +629,8 @@ export class ProductsService {
                   tx,
                   category,
                   items,
+                  [],
+                  sticker,
                 );
                 data.category = { connect: { id: categoryId } };
                 // Base product and packaging prices were snapshotted when the design was created.
@@ -797,6 +873,65 @@ export class ProductsService {
     return size as Prisma.InputJsonObject;
   }
 
+  /**
+   * The sticker size a set is made in, from the category's sizes. The price, shape and
+   * dimensions all come from the database, never from the request.
+   */
+  private async stickerSizeOf(
+    tx: Prisma.TransactionClient,
+    categoryId: string,
+    sizeId: string | undefined,
+    selectedMeasurementMm: number | undefined,
+  ) {
+    if (sizeId === undefined)
+      throw new BadRequestException(
+        'Choose the shape and size of your stickers',
+      );
+    if (selectedMeasurementMm !== undefined)
+      throw new BadRequestException('Sticker sizes have no adjustable length');
+    const category = await tx.category.findUnique({
+      where: { id: categoryId },
+      select: { sizes: true },
+    });
+    if (!category) throw new NotFoundException('Category not found');
+    const size = (Array.isArray(category.sizes) ? category.sizes : [])
+      .map(stickerSize)
+      .find((entry) => entry?.id === sizeId);
+    if (!size)
+      throw new BadRequestException(
+        'This sticker size is not available; choose another size',
+      );
+    return size;
+  }
+
+  /**
+   * A sticker set: 1–5 designs in the set's one shape and size, each placed once (its own
+   * position) and printed 1–1000 times. A design is the customer's upload or one of the
+   * category's own designs (an active SubCategory of it or of its design library).
+   */
+  private checkStickerSet(items: StoredItem[], sticker?: StickerSize) {
+    if (!sticker)
+      throw new BadRequestException(
+        'Choose the shape and size of your stickers',
+      );
+    if (items.length < 1 || items.length > MAX_STICKER_DESIGNS)
+      throw new BadRequestException(
+        `A sticker set has 1 to ${MAX_STICKER_DESIGNS} designs`,
+      );
+    if (items.some((item) => item.quantity > MAX_STICKERS_PER_DESIGN))
+      throw new BadRequestException(
+        `Order at most ${MAX_STICKERS_PER_DESIGN} stickers of one design`,
+      );
+    const positions = items.map((item) => item.position);
+    if (
+      positions.some((position) => position === undefined) ||
+      new Set(positions).size !== positions.length
+    )
+      throw new BadRequestException(
+        'Every sticker design needs its own position in the set',
+      );
+  }
+
   /** Checks changed components against the design's stored size (length or count). */
   private async validateStoredSize(
     tx: Prisma.TransactionClient,
@@ -871,7 +1006,11 @@ export class ProductsService {
     },
     items: StoredItem[],
     customKeys: (string | undefined)[] = [],
+    /** STICKER: the set's size, which prices every sticker. */
+    sticker?: StickerSize,
   ) {
+    if (category.builderType === STICKER_BUILDER)
+      this.checkStickerSet(items, sticker);
     // A phone case is one printed image: a library design or the customer's own photo.
     if (category.builderType === CASE_BUILDER && items.length !== 1)
       throw new BadRequestException(
@@ -924,6 +1063,7 @@ export class ProductsService {
       allowed,
       items,
       customKeys,
+      sticker?.price,
     );
     if (!canvas)
       // Strand builders order by position only; never persist stray placement data.
@@ -1095,6 +1235,12 @@ export class ProductsService {
     categoryIds: string[],
     input: StoredItem[],
     customKeys: (string | undefined)[] = [],
+    /**
+     * STICKER: the price of one printed sticker. Every item is then one design printed
+     * `quantity` times: the customer's own artwork or one of the category's designs,
+     * priced the same.
+     */
+    piecePrice?: number,
   ) {
     if (!input.length)
       throw new BadRequestException(
@@ -1165,7 +1311,7 @@ export class ProductsService {
           throw new BadRequestException(
             'Upload an image for ' + component.name,
           );
-        if (item.quantity !== 1)
+        if (item.quantity !== 1 && piecePrice === undefined)
           throw new BadRequestException('Each uploaded design is placed once');
       } else if (item.customDesignIndex !== undefined)
         throw new BadRequestException(
@@ -1173,7 +1319,8 @@ export class ProductsService {
             ' cannot carry an uploaded image; use the own-design option',
         );
       // Own designs cost the configured price once per design, however many are placed.
-      const unitPrice = custom && customCharged ? 0 : component.price;
+      const unitPrice =
+        piecePrice ?? (custom && customCharged ? 0 : component.price);
       if (custom) customCharged = true;
       itemCount += item.quantity;
       price += unitPrice * item.quantity;

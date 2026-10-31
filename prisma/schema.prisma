@@ -387,6 +387,11 @@ model Order {
   paymentType   PaymentType   @map("payment_type")
   paymentStatus PaymentStatus @default(UNPAID) @map("payment_status")
 
+  // How many of the product are ordered. Ready-made stickers are sold in quantities
+  // (at least 5); every other product is ordered one at a time, and a design carries its
+  // own quantities (e.g. stickers per design) in its items.
+  quantity Int @default(1)
+
   // Final order price snapshot in cents.
   //
   // Example:
@@ -416,6 +421,10 @@ model Order {
   // Later this can contain an S3 object key/URL.
   finalImageUrl String? @map("final_image_url")
 
+  // When the order reached COMPLETED (the final status, so it is set once). updatedAt
+  // also moves on later admin edits, so it cannot tell when an order was completed.
+  completedAt DateTime? @map("completed_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -429,6 +438,8 @@ model Order {
   @@index([status])
   @@index([paymentStatus])
   @@index([createdAt])
+  // The community gallery: the most recently completed orders.
+  @@index([status, completedAt])
   @@map("orders")
 }
 

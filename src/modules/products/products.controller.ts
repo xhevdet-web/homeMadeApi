@@ -49,6 +49,15 @@ export class ProductsController {
   ) {
     return this.service.findCompletedCreationsFromOthers(user, categoryId);
   }
+  @Get('creations/community')
+  @UseGuards(JwtAuthGuard)
+  findCommunityGallery(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('categoryId', new ParseUUIDPipe({ optional: true }))
+    categoryId?: string,
+  ) {
+    return this.service.findCommunityGallery(user, categoryId);
+  }
   @Get(':id')
   @UseGuards(OptionalJwtAuthGuard)
   findOne(

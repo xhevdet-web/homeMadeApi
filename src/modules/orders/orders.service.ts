@@ -33,7 +33,12 @@ import {
 import {
   CASE_BUILDER,
   needsBaseProduct,
+  STICKER_BUILDER,
 } from '../categories/builder-config.js';
+import {
+  MAX_STICKERS_PER_DESIGN,
+  MIN_STICKERS_PER_ORDER,
+} from '../categories/sticker-sizes.js';
 import { StorageService } from '../../storage/storage.service.js';
 import { ImageWriteService } from '../../storage/image-write.service.js';
 import { OrderNotificationService } from './order-notification.service.js';
@@ -60,6 +65,7 @@ function orderSelect(user: AuthenticatedUser) {
     productId: true,
     orderNumber: true,
     status: true,
+    quantity: true,
     paymentType: true,
     paymentStatus: true,
     totalPrice: true,
@@ -272,6 +278,24 @@ export class OrdersService {
             });
             if (!product) throw new NotFoundException('Product not found');
             const company = product.origin === 'COMPANY';
+            const stickers = product.category.builderType === STICKER_BUILDER;
+            // Ready-made stickers are sold in quantities; everything else one at a time.
+            const quantity =
+              company && stickers
+                ? (dto.quantity ?? MIN_STICKERS_PER_ORDER)
+                : (dto.quantity ?? 1);
+            if (company && stickers && quantity < MIN_STICKERS_PER_ORDER)
+              throw new BadRequestException(
+                `Order at least ${MIN_STICKERS_PER_ORDER} stickers`,
+              );
+            if (company && stickers && quantity > MAX_STICKERS_PER_DESIGN)
+              throw new BadRequestException(
+                `Order at most ${MAX_STICKERS_PER_DESIGN} stickers at once`,
+              );
+            if (!(company && stickers) && quantity !== 1)
+              throw new BadRequestException(
+                'This product is ordered one at a time',
+              );
             // The size bought: chosen at checkout for a COMPANY product, in the studio for a design.
             let size: string | undefined;
             if (company) {
@@ -280,6 +304,10 @@ export class OrdersService {
                   'Only active company products created by admins can be ordered',
                 );
               if (parseSizes(product.sizes).length) {
+                if (quantity !== 1)
+                  throw new BadRequestException(
+                    `${product.name} is ordered one at a time`,
+                  );
                 if (!dto.size)
                   throw new BadRequestException(
                     `Choose a size of ${product.name}`,
@@ -296,13 +324,15 @@ export class OrdersService {
                     id: product.id,
                     origin: 'COMPANY',
                     isActive: true,
-                    stock: { gte: 1 },
+                    stock: { gte: quantity },
                   },
-                  data: { stock: { decrement: 1 } },
+                  data: { stock: { decrement: quantity } },
                 });
                 if (reserved.count !== 1)
                   throw new BadRequestException(
-                    'Insufficient finished-product stock',
+                    quantity > 1
+                      ? `Only ${product.stock} of ${product.name} are in stock`
+                      : 'Insufficient finished-product stock',
                   );
               }
             }
@@ -359,7 +389,7 @@ export class OrdersService {
             const quantities = new Map<string, number>();
             // Designs start from the base product and packaging prices snapshotted on the design.
             let totalPrice = company
-              ? product.price
+              ? product.price * quantity
               : (product.basePrice ?? 0) + (product.packagingPrice ?? 0);
             if (!Number.isInteger(totalPrice) || totalPrice < 0)
               throw new BadRequestException('Product has an invalid price');
@@ -388,6 +418,16 @@ export class OrdersService {
                   'SubCategory is inactive: ' + item.subCategory.name,
                 );
             }
+            // A sticker set is printed only from five stickers, whatever its designs.
+            if (
+              !company &&
+              stickers &&
+              product.items.reduce((sum, item) => sum + item.quantity, 0) <
+                MIN_STICKERS_PER_ORDER
+            )
+              throw new BadRequestException(
+                `Order at least ${MIN_STICKERS_PER_ORDER} stickers in your set`,
+              );
             // A jewelry design may be ordered before it fills its chosen length, but not
             // below the minimum price.
             if (!company && isJewelryCategory(product.category))
@@ -581,6 +621,7 @@ export class OrdersService {
                 status: 'ORDERED',
                 paymentStatus: 'UNPAID',
                 paymentType: dto.paymentType,
+                quantity,
                 totalPrice,
                 designPreviewKey: previewKey,
                 designSnapshot: {
@@ -804,7 +845,10 @@ export class OrdersService {
       () =>
         this.prisma.order.update({
           where: { id, status: order.status },
-          data: { status: dto.status },
+          data: {
+            status: dto.status,
+            ...(dto.status === 'COMPLETED' ? { completedAt: new Date() } : {}),
+          },
           select: orderSelect(user),
         }),
       true,

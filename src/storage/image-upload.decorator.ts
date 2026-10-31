@@ -358,7 +358,7 @@ export function ImageUpload(
   if (entity === 'product')
     properties.customDesigns = {
       type: 'array',
-      maxItems: 4,
+      maxItems: 5,
       items: { type: 'string', format: 'binary' },
       description:
         'Customer artwork for "Your own design" (CUSTOM_UPLOAD) items; each item references one by customDesignIndex.',
@@ -366,7 +366,7 @@ export function ImageUpload(
   const options = {
     limits: {
       fileSize: MAX_IMAGE_BYTES,
-      files: entity === 'product' ? 9 : 1,
+      files: entity === 'product' ? 10 : 1,
       fields: 24,
       fieldSize: 1024 * 1024,
     },
@@ -410,7 +410,7 @@ export function ImageUpload(
               { name: 'file', maxCount: 1 },
               { name: 'designPreview', maxCount: 1 },
               { name: 'backDesignPreview', maxCount: 1 },
-              { name: 'customDesigns', maxCount: 4 },
+              { name: 'customDesigns', maxCount: 5 },
               { name: 'backImage', maxCount: 1 },
               { name: 'overlayImage', maxCount: 1 },
             ],

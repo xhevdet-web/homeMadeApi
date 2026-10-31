@@ -39,9 +39,16 @@ export function validateBuilderConfig(
  * Builders whose designs are composed freely on a canvas, so every placed component
  * keeps its x/y/scale/rotation. APPAREL is two-sided (FRONT/BACK); BOUQUET and GIFT
  * have one canvas, and x/y are the item centre, normalised 0–1 within it. CASE has one
- * design, its centre normalised 0–1 within the model's printable area.
+ * design, its centre normalised 0–1 within the model's printable area. STICKER has one
+ * artwork per design, its centre normalised 0–1 within the sticker.
  */
-export const CANVAS_BUILDERS = ['APPAREL', 'BOUQUET', 'GIFT', 'CASE'] as const;
+export const CANVAS_BUILDERS = [
+  'APPAREL',
+  'BOUQUET',
+  'GIFT',
+  'CASE',
+  'STICKER',
+] as const;
 
 /**
  * Phone cases: the customer picks a model (a COMPANY product with its own template) and
@@ -49,11 +56,17 @@ export const CANVAS_BUILDERS = ['APPAREL', 'BOUQUET', 'GIFT', 'CASE'] as const;
  */
 export const CASE_BUILDER = 'CASE';
 
+/**
+ * Stickers: the customer picks a shape and size (the category's sizes) and makes a set of
+ * 1–5 designs from their own artwork; each design is printed as many times as ordered.
+ */
+export const STICKER_BUILDER = 'STICKER';
+
 /** Builders printed on a COMPANY product chosen first: the garment, or the phone model. */
 export const BASE_PRODUCT_BUILDERS = ['APPAREL', 'CASE'] as const;
 
 /** Builders that offer the customer-upload SubCategory (CUSTOM_UPLOAD). */
-export const UPLOAD_BUILDERS = ['APPAREL', 'CASE'] as const;
+export const UPLOAD_BUILDERS = ['APPAREL', 'CASE', 'STICKER'] as const;
 
 const listed = (list: readonly string[], builderType?: string | null) =>
   list.includes(builderType ?? '');

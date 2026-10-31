@@ -183,6 +183,90 @@ describe('Categories and SubCategories HTTP CRUD', () => {
       }),
     });
   });
+  it('gives a STICKER category a "Your own artwork" upload design', async () => {
+    category.create.mockResolvedValue({
+      id,
+      name: 'Stickers',
+      builderType: 'STICKER',
+    });
+    subCategory.findMany.mockResolvedValue([]);
+    await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .send({ name: 'Stickers', builderType: 'STICKER' })
+      .expect(201);
+    expect(subCategory.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        categoryId: id,
+        name: 'Your own artwork',
+        type: 'CUSTOM_UPLOAD',
+        price: 0,
+        trackStock: false,
+      }),
+    });
+  });
+
+  describe('sticker sizes', () => {
+    const square = {
+      id: 'square-5',
+      name: '5 × 5 cm',
+      shape: 'SQUARE',
+      widthMm: 50,
+      heightMm: 50,
+      price: 120,
+    };
+    const oval = {
+      id: 'oval-7x4',
+      name: '7 × 4 cm',
+      shape: 'OVAL',
+      widthMm: 70,
+      heightMm: 40,
+      price: 150,
+    };
+
+    it('stores shape, whole millimetres and the price per sticker', async () => {
+      category.create.mockResolvedValue({ id, builderType: 'STICKER' });
+      subCategory.findMany.mockResolvedValue([{ id: 'own' }]);
+      await request(app.getHttpServer())
+        .post('/api/v1/categories')
+        .send({
+          name: 'Stickers',
+          builderType: 'STICKER',
+          sizes: [square, oval],
+        })
+        .expect(201);
+      expect(category.create.mock.calls[0][0].data.sizes).toEqual([
+        square,
+        oval,
+      ]);
+    });
+
+    it.each([
+      [{ ...square, widthMm: 71, heightMm: 71 }],
+      [{ ...oval, widthMm: 80 }],
+      [{ ...square, heightMm: 40 }],
+      [{ ...square, shape: 'CIRCLE', heightMm: 30 }],
+      [{ ...square, shape: 'STAR' }],
+      [{ ...square, widthMm: 50.5, heightMm: 50.5 }],
+      [{ ...square, price: undefined }],
+    ])('rejects sticker size %j', async (size) => {
+      category.findUnique.mockResolvedValue({
+        id,
+        builderType: 'STICKER',
+        subCategories: [],
+      });
+      await request(app.getHttpServer())
+        .post('/api/v1/categories')
+        .send({ name: 'Stickers', builderType: 'STICKER', sizes: [size] })
+        .expect(400);
+      // An update takes the studio from the stored category when the request omits it.
+      await request(app.getHttpServer())
+        .patch('/api/v1/categories/' + id)
+        .send({ sizes: [size] })
+        .expect(400);
+      expect(category.create).not.toHaveBeenCalled();
+      expect(category.update).not.toHaveBeenCalled();
+    });
+  });
   it('lets jewelry share a jewelry library, but not another kind of studio', async () => {
     category.findUnique.mockResolvedValue({
       id: libraryId,
