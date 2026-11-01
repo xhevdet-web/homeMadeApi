@@ -7,9 +7,18 @@ import {
   Inject,
   Patch,
   Post,
+  Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { AuthService } from './auth.service.js';
+import {
+  SESSION_COOKIE,
+  clearedSessionCookieOptions,
+  isWebClient,
+  sessionCookieOptions,
+} from './session-cookie.js';
 import { LoginDto } from './dto/login.dto.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard.js';
@@ -20,10 +29,30 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user.ty
 export class AuthController {
   constructor(@Inject(AuthService) private readonly auth: AuthService) {}
 
+  // The website asks for a cookie session with its client header: the token goes into
+  // an httpOnly cookie and is left out of the body. The mobile app gets the token as before.
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  login(@Body() dto: LoginDto) {
-    return this.auth.login(dto);
+  async login(
+    @Body() dto: LoginDto,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const session = await this.auth.login(dto);
+    if (!isWebClient(request.headers)) return session;
+    response.cookie(
+      SESSION_COOKIE,
+      session.accessToken,
+      sessionCookieOptions(session.expiresIn),
+    );
+    return { expiresIn: session.expiresIn, user: session.user };
+  }
+
+  // Tokens are stateless, so signing out only removes the website's cookie.
+  @Post('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  logout(@Res({ passthrough: true }) response: Response) {
+    response.clearCookie(SESSION_COOKIE, clearedSessionCookieOptions());
   }
 
   @Get('me')

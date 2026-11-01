@@ -21,11 +21,9 @@ export class OptionalJwtAuthGuard implements CanActivate {
     const request = context
       .switchToHttp()
       .getRequest<Request & { user?: AuthenticatedUser }>();
-    if (!request.headers.authorization) return true;
+    if (!this.strategy.hasCredentials(request)) return true;
     try {
-      request.user = await this.strategy.authenticate(
-        request.headers.authorization,
-      );
+      request.user = await this.strategy.authenticateRequest(request);
     } catch {
       request.user = undefined;
     }

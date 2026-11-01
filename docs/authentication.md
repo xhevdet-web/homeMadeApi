@@ -39,6 +39,37 @@ HS256 only, signature, expiry, issuer and audience checks, then an active-user
 lookup through the injected PrismaService. Missing expiration, invalid token
 purpose, deleted and inactive users fail authentication.
 
+## Website cookie session
+
+The website keeps the access token in an httpOnly cookie, so a page reload stays signed
+in without exposing the token to scripts. The mobile app is unchanged.
+
+- Login with the header `X-HomeMade-Client: web`: the response sets the `hc_session`
+  cookie (HttpOnly, Path=/api/v1, Max-Age = expiresIn) and returns `{ expiresIn, user }`
+  without `accessToken`. Without the header, login works exactly as before.
+- JwtAuthGuard and OptionalJwtAuthGuard accept `Authorization: Bearer` first, then the
+  cookie. A cookie-authenticated POST/PATCH/PUT/DELETE must also send
+  `X-HomeMade-Client: web`. The custom header forces a CORS preflight, which only the
+  origins in CORS_ORIGINS pass, so other sites can't make writes with the cookie.
+- POST /api/v1/auth/logout clears the cookie (204). Tokens are stateless, so a copied
+  token stays valid until it expires.
+- The browser must send `credentials: 'include'`. CORS allows credentials and the
+  client header.
+
+```dotenv
+CORS_ORIGINS=http://localhost:8081,http://localhost:5173
+AUTH_COOKIE_SAMESITE=lax   # lax | strict | none; use none when website and API are on different sites
+AUTH_COOKIE_SECURE=false   # defaults to true when NODE_ENV=production; forced true for none
+AUTH_COOKIE_DOMAIN=        # optional, e.g. .example.com to share across subdomains
+```
+
+## Public stats
+
+GET /api/v1/stats/public (no auth) returns
+`{ registeredUsers, completedOrders, products, categories }`: active customer accounts,
+COMPLETED orders, active COMPANY products and active categories. Counts only, cached for
+60 seconds in memory and with `Cache-Control: public, max-age=60`.
+
 ## Protect another endpoint
 
 Import AuthModule into the endpoint's Nest module, then use:

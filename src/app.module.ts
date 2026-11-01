@@ -8,6 +8,7 @@ import { SubCategoriesModule } from './modules/sub-categories/sub-categories.mod
 import { ContactModule } from './modules/contact/contact.module.js';
 import { GiftPackagingModule } from './modules/gift-packaging/gift-packaging.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
+import { StatsModule } from './modules/stats/stats.module.js';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { StorageModule } from './storage/storage.module.js';
@@ -28,6 +29,7 @@ import { AppService } from './app.service.js';
     ContactModule,
     GiftPackagingModule,
     NotificationsModule,
+    StatsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

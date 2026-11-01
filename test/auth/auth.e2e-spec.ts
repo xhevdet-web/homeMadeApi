@@ -367,4 +367,99 @@ describe('Authentication HTTP', () => {
       expect(user.update).not.toHaveBeenCalled();
     });
   });
+
+  describe('website cookie session', () => {
+    const webLogin = () =>
+      request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .set('X-HomeMade-Client', 'web')
+        .send({ email: safe.email, password });
+    const sessionCookie = (response: request.Response) =>
+      [response.headers['set-cookie'] ?? []]
+        .flat()
+        .find((cookie: string) => cookie.startsWith('hc_session='));
+
+    it('keeps the token in an httpOnly cookie, not in the body', async () => {
+      const login = await webLogin().expect(200);
+      expect(login.body).not.toHaveProperty('accessToken');
+      expect(login.body).toMatchObject({ expiresIn: 3600, user: { id } });
+      const cookie = sessionCookie(login)!;
+      expect(cookie).toMatch(/HttpOnly/);
+      expect(cookie).toMatch(/SameSite=Lax/);
+      expect(cookie).toMatch(/Path=\/api\/v1/);
+      expect(cookie).toMatch(/Max-Age=3600/);
+      const me = await request(app.getHttpServer())
+        .get('/api/v1/auth/me')
+        .set('Cookie', cookie.split(';')[0])
+        .expect(200);
+      expect(me.body.id).toBe(id);
+    });
+
+    it('leaves the mobile login without a cookie', async () => {
+      const login = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email: safe.email, password })
+        .expect(200);
+      expect(typeof login.body.accessToken).toBe('string');
+      expect(sessionCookie(login)).toBeUndefined();
+    });
+
+    it('requires the client header for cookie-authenticated writes', async () => {
+      const cookie = sessionCookie(await webLogin())!.split(';')[0];
+      user.update.mockResolvedValue({ id });
+      const body = {
+        currentPassword: password,
+        newPassword: 'AnotherPassword456!',
+        confirmPassword: 'AnotherPassword456!',
+      };
+      await request(app.getHttpServer())
+        .patch('/api/v1/auth/change-password')
+        .set('Cookie', cookie)
+        .send(body)
+        .expect(401);
+      expect(user.update).not.toHaveBeenCalled();
+      await request(app.getHttpServer())
+        .patch('/api/v1/auth/change-password')
+        .set('Cookie', cookie)
+        .set('X-HomeMade-Client', 'web')
+        .send(body)
+        .expect(200);
+    });
+
+    it('rejects an invalid cookie and prefers the Bearer header', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/auth/me')
+        .set('Cookie', 'hc_session=invalid')
+        .expect(401);
+      const token = await jwt.signAsync({ sub: id, tokenUse: 'access' });
+      await request(app.getHttpServer())
+        .get('/api/v1/auth/me')
+        .set('Cookie', 'hc_session=invalid')
+        .set('Authorization', 'Bearer ' + token)
+        .expect(200);
+    });
+
+    it('clears the cookie on logout', async () => {
+      const logout = await request(app.getHttpServer())
+        .post('/api/v1/auth/logout')
+        .expect(204);
+      expect(sessionCookie(logout)).toMatch(/Expires=Thu, 01 Jan 1970/);
+    });
+
+    it('lets the website origin send credentials and its client header', async () => {
+      const preflight = await request(app.getHttpServer())
+        .options('/api/v1/auth/login')
+        .set('Origin', 'http://localhost:5173')
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'content-type,x-homemade-client')
+        .expect(204);
+      expect(preflight.headers['access-control-allow-origin']).toBe(
+        'http://localhost:5173',
+      );
+      expect(preflight.headers['access-control-allow-credentials']).toBe('true');
+      expect(
+        preflight.headers['access-control-allow-headers'].toLowerCase(),
+      ).toContain('x-homemade-client');
+    });
+  });
 });
