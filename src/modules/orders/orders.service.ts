@@ -35,10 +35,8 @@ import {
   needsBaseProduct,
   STICKER_BUILDER,
 } from '../categories/builder-config.js';
-import {
-  MAX_STICKERS_PER_DESIGN,
-  MIN_STICKERS_PER_ORDER,
-} from '../categories/sticker-sizes.js';
+import { MIN_STICKERS_PER_ORDER } from '../categories/sticker-sizes.js';
+import { orderQuantityRule } from './order-quantity.js';
 import { StorageService } from '../../storage/storage.service.js';
 import { ImageWriteService } from '../../storage/image-write.service.js';
 import { OrderNotificationService } from './order-notification.service.js';
@@ -279,22 +277,25 @@ export class OrdersService {
             if (!product) throw new NotFoundException('Product not found');
             const company = product.origin === 'COMPANY';
             const stickers = product.category.builderType === STICKER_BUILDER;
-            // Ready-made stickers are sold in quantities; everything else one at a time.
-            const quantity =
-              company && stickers
-                ? (dto.quantity ?? MIN_STICKERS_PER_ORDER)
-                : (dto.quantity ?? 1);
-            if (company && stickers && quantity < MIN_STICKERS_PER_ORDER)
-              throw new BadRequestException(
-                `Order at least ${MIN_STICKERS_PER_ORDER} stickers`,
-              );
-            if (company && stickers && quantity > MAX_STICKERS_PER_DESIGN)
-              throw new BadRequestException(
-                `Order at most ${MAX_STICKERS_PER_DESIGN} stickers at once`,
-              );
-            if (!(company && stickers) && quantity !== 1)
+            // Ready-made stickers and mugs are sold in quantities; everything else one at a time.
+            const rule = orderQuantityRule(
+              product.category.builderType,
+              company,
+            );
+            const quantity = dto.quantity ?? rule?.min ?? 1;
+            if (!rule && quantity !== 1)
               throw new BadRequestException(
                 'This product is ordered one at a time',
+              );
+            if (rule && quantity < rule.min)
+              throw new BadRequestException(
+                stickers
+                  ? `Order at least ${MIN_STICKERS_PER_ORDER} stickers`
+                  : `Order at least ${rule.min}`,
+              );
+            if (rule && quantity > rule.max)
+              throw new BadRequestException(
+                `Order at most ${rule.max} at once`,
               );
             // The size bought: chosen at checkout for a COMPANY product, in the studio for a design.
             let size: string | undefined;
@@ -434,6 +435,12 @@ export class OrdersService {
               assertJewelryMinimumPrice(
                 totalPrice,
                 isNecklaceCategory(product.category),
+              );
+            // Identical copies of a design (e.g. five of one mug) cost five times as much.
+            if (!company) totalPrice *= quantity;
+            if (totalPrice > 2147483647)
+              throw new BadRequestException(
+                'Product quantity or price exceeds the supported integer range',
               );
             // Preflight aggregated requirements, including repeated beads at different positions.
             for (const [subCategoryId, requestedQuantity] of quantities) {
@@ -642,9 +649,14 @@ export class OrdersService {
             // The base row lock above makes these safe against concurrent orders.
             if (base && size) await takeSizeStock(tx, base, size);
             else if (base) {
+              // One base per copy ordered, e.g. five blank mugs for five mugs.
               const reserved = await tx.product.updateMany({
-                where: { id: base.id, isActive: true, stock: { gte: 1 } },
-                data: { stock: { decrement: 1 } },
+                where: {
+                  id: base.id,
+                  isActive: true,
+                  stock: { gte: quantity },
+                },
+                data: { stock: { decrement: quantity } },
               });
               if (reserved.count !== 1)
                 throw new BadRequestException(`${base.name} just sold out`);

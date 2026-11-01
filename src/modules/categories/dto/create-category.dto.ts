@@ -34,9 +34,16 @@ export class CreateCategoryDto {
 
   @Transform(emptyToNull)
   @IsOptional()
-  @IsIn(['JEWELRY', 'BOUQUET', 'GIFT', 'APPAREL', 'CASE', 'STICKER'])
+  @IsIn(['JEWELRY', 'BOUQUET', 'GIFT', 'APPAREL', 'CASE', 'STICKER', 'MUG'])
   builderType?:
-    'JEWELRY' | 'BOUQUET' | 'GIFT' | 'APPAREL' | 'CASE' | 'STICKER' | null;
+    | 'JEWELRY'
+    | 'BOUQUET'
+    | 'GIFT'
+    | 'APPAREL'
+    | 'CASE'
+    | 'STICKER'
+    | 'MUG'
+    | null;
 
   @IsOptional()
   @IsArray()

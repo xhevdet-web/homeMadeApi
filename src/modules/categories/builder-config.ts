@@ -48,6 +48,7 @@ export const CANVAS_BUILDERS = [
   'GIFT',
   'CASE',
   'STICKER',
+  'MUG',
 ] as const;
 
 /**
@@ -62,11 +63,20 @@ export const CASE_BUILDER = 'CASE';
  */
 export const STICKER_BUILDER = 'STICKER';
 
-/** Builders printed on a COMPANY product chosen first: the garment, or the phone model. */
-export const BASE_PRODUCT_BUILDERS = ['APPAREL', 'CASE'] as const;
+/**
+ * Mugs: one design of up to five images printed on the company's blank mug (see
+ * mug-config.ts). The studio opens on that mug directly; there is nothing to choose first.
+ */
+export const MUG_BUILDER = 'MUG';
+
+/**
+ * Builders printed on a COMPANY product: the garment or phone model the customer chooses,
+ * or the blank mug.
+ */
+export const BASE_PRODUCT_BUILDERS = ['APPAREL', 'CASE', 'MUG'] as const;
 
 /** Builders that offer the customer-upload SubCategory (CUSTOM_UPLOAD). */
-export const UPLOAD_BUILDERS = ['APPAREL', 'CASE', 'STICKER'] as const;
+export const UPLOAD_BUILDERS = ['APPAREL', 'CASE', 'STICKER', 'MUG'] as const;
 
 const listed = (list: readonly string[], builderType?: string | null) =>
   list.includes(builderType ?? '');
@@ -83,4 +93,4 @@ export function isCanvasBuilder(builderType: string | null | undefined) {
  * Builders that may carry personalised text layers, e.g. a gift message, a bouquet card or
  * a name printed on a hoodie. Text is a studio tool: never priced, never stocked.
  */
-export const TEXT_BUILDERS = ['GIFT', 'BOUQUET', 'APPAREL'] as const;
+export const TEXT_BUILDERS = ['GIFT', 'BOUQUET', 'APPAREL', 'MUG'] as const;

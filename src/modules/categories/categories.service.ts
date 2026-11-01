@@ -15,6 +15,7 @@ import type { UpdateCategoryDto } from './dto/update-category.dto.js';
 import {
   acceptsUploads,
   CASE_BUILDER,
+  MUG_BUILDER,
   STICKER_BUILDER,
   validateBuilderConfig,
 } from './builder-config.js';
@@ -132,6 +133,8 @@ export class CategoriesService {
   ) {
     const phoneCase = builderType === CASE_BUILDER;
     const sticker = builderType === STICKER_BUILDER;
+    // A mug costs the blank mug's price, whatever images are printed on it.
+    const mug = builderType === MUG_BUILDER;
     const existing = await this.query(() =>
       this.prisma.subCategory.findMany({
         where: { categoryId, type: 'CUSTOM_UPLOAD' },
@@ -146,16 +149,20 @@ export class CategoriesService {
           categoryId,
           name: sticker
             ? 'Your own artwork'
-            : phoneCase
-              ? 'Your own photo'
-              : 'Your own design',
+            : mug
+              ? 'Your own image'
+              : phoneCase
+                ? 'Your own photo'
+                : 'Your own design',
           description: sticker
             ? 'Upload your own photo or artwork to print as stickers.'
-            : phoneCase
-              ? 'Upload your own photo to print on your phone case.'
-              : 'Upload your own artwork to print on your piece.',
+            : mug
+              ? 'Upload your own photo or artwork to print on your mug.'
+              : phoneCase
+                ? 'Upload your own photo to print on your phone case.'
+                : 'Upload your own artwork to print on your piece.',
           type: 'CUSTOM_UPLOAD',
-          price: phoneCase || sticker ? 0 : 500,
+          price: phoneCase || sticker || mug ? 0 : 500,
           stock: 0,
           trackStock: false,
         },

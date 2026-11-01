@@ -421,7 +421,7 @@ describe('Products HTTP CRUD', () => {
       textLayers: [text],
     }).expect(400);
     expect(response.body.message).toBe(
-      'Only gift, bouquet and apparel designs can include text',
+      'Only gift, bouquet, apparel and mug designs can include text',
     );
   });
 

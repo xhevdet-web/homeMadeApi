@@ -9,6 +9,9 @@ import { Prisma } from '../../generated/prisma/client.js';
  * { "x": 0.3, "y": 0.28, "width": 0.4, "height": 0.42, "widthCm": 30, "heightCm": 40 }
  *
  * Phone cases round the area's corners: `radius` is a fraction (0–0.5) of its width.
+ * The blank mug gives its print size in whole millimetres, with the safe margins that
+ * important artwork stays inside: { ..., "widthMm": 200, "heightMm": 80,
+ * "safeMm": { "top": 5, "right": 5, "bottom": 5, "left": 5 } }.
  */
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -29,12 +32,32 @@ export function validatePrintArea(
   if (!object(value)) invalid('must be an object or null');
   for (const key of Object.keys(value))
     if (
-      !['x', 'y', 'width', 'height', 'widthCm', 'heightCm', 'radius'].includes(
-        key,
-      )
+      ![
+        'x',
+        'y',
+        'width',
+        'height',
+        'widthCm',
+        'heightCm',
+        'radius',
+        'widthMm',
+        'heightMm',
+        'safeMm',
+      ].includes(key)
     )
       invalid(`unknown field ${key}`);
-  const { x, y, width, height, widthCm, heightCm, radius } = value;
+  const {
+    x,
+    y,
+    width,
+    height,
+    widthCm,
+    heightCm,
+    radius,
+    widthMm,
+    heightMm,
+    safeMm,
+  } = value;
   if (![x, y, width, height].every(fraction))
     invalid('x, y, width and height must be fractions from 0 to 1');
   const area = { x, y, width, height } as Record<string, number>;
@@ -58,6 +81,39 @@ export function validatePrintArea(
     if (!fraction(radius) || radius > 0.5)
       invalid('radius must be a fraction of the width from 0 to 0.5');
     area.radius = radius;
+  }
+  const millimetres = (mm: unknown, max: number) =>
+    Number.isInteger(mm) && (mm as number) >= 0 && (mm as number) <= max;
+  for (const [key, mm] of [
+    ['widthMm', widthMm],
+    ['heightMm', heightMm],
+  ] as const) {
+    if (mm === undefined) continue;
+    if (!millimetres(mm, 2000) || mm === 0)
+      invalid(`${key} must be whole millimetres from 1 to 2000`);
+    area[key] = mm as number;
+  }
+  if (safeMm !== undefined) {
+    if (area.widthMm === undefined || area.heightMm === undefined)
+      invalid('safeMm needs widthMm and heightMm');
+    if (!object(safeMm))
+      invalid('safeMm must be { top, right, bottom, left } in millimetres');
+    for (const key of Object.keys(safeMm))
+      if (!['top', 'right', 'bottom', 'left'].includes(key))
+        invalid(`unknown safeMm field ${key}`);
+    const { top = 0, right = 0, bottom = 0, left = 0 } = safeMm;
+    if (
+      ![top, right, bottom, left].every((mm) => millimetres(mm, 2000)) ||
+      (left as number) + (right as number) >= area.widthMm ||
+      (top as number) + (bottom as number) >= area.heightMm
+    )
+      invalid(
+        'safe margins must be whole millimetres that leave room inside the print size',
+      );
+    return {
+      ...area,
+      safeMm: { top, right, bottom, left } as Prisma.InputJsonObject,
+    };
   }
   return area;
 }

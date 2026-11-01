@@ -332,6 +332,94 @@ describe('Orders HTTP', () => {
     });
   });
 
+  describe('mug quantities', () => {
+    const mugCategory = { ...productRecord.category, builderType: 'MUG' };
+    const blankId = 'c9d1f0a4-2a71-46c6-bfba-a453d847044f';
+    const blank = {
+      ...productRecord,
+      id: blankId,
+      name: 'White Mug',
+      origin: 'COMPANY',
+      createdById: otherId,
+      createdBy: { role: 'ADMIN' },
+      isActive: true,
+      price: 1200,
+      stock: 30,
+      sizes: null,
+      items: [],
+      category: mugCategory,
+    };
+    const design = {
+      ...productRecord,
+      baseProductId: blankId,
+      basePrice: 1200,
+      price: 1200,
+      category: mugCategory,
+      items: [
+        {
+          ...productRecord.items[0],
+          id: 'image-0',
+          quantity: 1,
+          position: 0,
+          unitPrice: 0,
+          subCategory: {
+            id: productRecord.items[0].subCategoryId,
+            name: 'Your own image',
+            stock: 0,
+            trackStock: false,
+            isActive: true,
+          },
+        },
+      ],
+    };
+    const serve = (...records: ({ id: string } & Record<string, unknown>)[]) =>
+      product.findUnique.mockImplementation(
+        async ({ where }: { where: { id: string } }) =>
+          records.find((entry) => entry.id === where.id) ?? null,
+      );
+
+    it('orders several identical mugs of one design, one blank mug each', async () => {
+      serve(design, blank);
+      product.updateMany.mockResolvedValue({ count: 1 });
+      await post({ ...body, quantity: 3 }).expect(201);
+      expect(order.create.mock.calls[0][0].data).toMatchObject({
+        quantity: 3,
+        totalPrice: 3600,
+      });
+      expect(product.updateMany).toHaveBeenCalledWith({
+        where: { id: blankId, isActive: true, stock: { gte: 3 } },
+        data: { stock: { decrement: 3 } },
+      });
+    });
+
+    it('orders one mug by default and at most one hundred', async () => {
+      serve(design, blank);
+      product.updateMany.mockResolvedValue({ count: 1 });
+      await post(body).expect(201);
+      expect(order.create.mock.calls[0][0].data).toMatchObject({
+        quantity: 1,
+        totalPrice: 1200,
+      });
+      await post({ ...body, quantity: 101 }).expect(400);
+      expect(order.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('orders ready-made mugs by the piece', async () => {
+      product.findUnique.mockResolvedValue({
+        ...blank,
+        id: productId,
+        name: 'Birthday Mug',
+        price: 1500,
+      });
+      product.updateMany.mockResolvedValue({ count: 1 });
+      await post({ ...body, quantity: 2 }).expect(201);
+      expect(order.create.mock.calls[0][0].data).toMatchObject({
+        quantity: 2,
+        totalPrice: 3000,
+      });
+    });
+  });
+
   const baseId = 'c7d1f0a4-2a71-46c6-bfba-a453d847044f';
   const printAreas = {
     front: {

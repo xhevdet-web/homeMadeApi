@@ -40,10 +40,12 @@ import {
   acceptsUploads,
   CASE_BUILDER,
   isCanvasBuilder,
+  MUG_BUILDER,
   needsBaseProduct,
   STICKER_BUILDER,
   TEXT_BUILDERS,
 } from '../categories/builder-config.js';
+import { MAX_MUG_ELEMENTS } from '../categories/mug-config.js';
 import {
   MAX_STICKER_DESIGNS,
   MAX_STICKERS_PER_DESIGN,
@@ -209,6 +211,16 @@ export class ProductsService {
                       sticker,
                     );
                 const textLayers = this.textLayers(category, dto.textLayers);
+                // A mug is printed with an image, text, or both, never blank.
+                if (
+                  !company &&
+                  category.builderType === MUG_BUILDER &&
+                  !calculated.items.length &&
+                  !textLayers
+                )
+                  throw new BadRequestException(
+                    'Add an image or text to your mug',
+                  );
                 const base = company
                   ? undefined
                   : await this.resolveBaseProduct(
@@ -307,7 +319,8 @@ export class ProductsService {
     );
     if (
       category?.builderType !== CASE_BUILDER &&
-      category?.builderType !== STICKER_BUILDER
+      category?.builderType !== STICKER_BUILDER &&
+      category?.builderType !== MUG_BUILDER
     )
       throw new BadRequestException('Uploaded designs must be PNG images');
   }
@@ -932,6 +945,24 @@ export class ProductsService {
       );
   }
 
+  /**
+   * A mug: ONE design of at most MAX_MUG_ELEMENTS images (uploads or the category's
+   * designs), each placed once. `position` is the layer order, back to front.
+   */
+  private checkMugDesign(items: StoredItem[]) {
+    // A mug may also be text only; that it has an image or text is checked with its text.
+    if (items.length > MAX_MUG_ELEMENTS)
+      throw new BadRequestException(
+        MAX_MUG_ELEMENTS === 1
+          ? 'A mug design has one image'
+          : `A mug design has at most ${MAX_MUG_ELEMENTS} images`,
+      );
+    if (items.some((item) => item.quantity !== 1))
+      throw new BadRequestException(
+        'Each image is placed once; order more mugs at checkout',
+      );
+  }
+
   /** Checks changed components against the design's stored size (length or count). */
   private async validateStoredSize(
     tx: Prisma.TransactionClient,
@@ -1011,6 +1042,7 @@ export class ProductsService {
   ) {
     if (category.builderType === STICKER_BUILDER)
       this.checkStickerSet(items, sticker);
+    if (category.builderType === MUG_BUILDER) this.checkMugDesign(items);
     // A phone case is one printed image: a library design or the customer's own photo.
     if (category.builderType === CASE_BUILDER && items.length !== 1)
       throw new BadRequestException(
@@ -1063,7 +1095,8 @@ export class ProductsService {
       allowed,
       items,
       customKeys,
-      sticker?.price,
+      // Stickers cost their size's price each; a mug's images are included in its price.
+      category.builderType === MUG_BUILDER ? 0 : sticker?.price,
     );
     if (!canvas)
       // Strand builders order by position only; never persist stray placement data.
@@ -1096,7 +1129,7 @@ export class ProductsService {
       !(TEXT_BUILDERS as readonly string[]).includes(category.builderType ?? '')
     )
       throw new BadRequestException(
-        'Only gift, bouquet and apparel designs can include text',
+        'Only gift, bouquet, apparel and mug designs can include text',
       );
     if (new Set(layers.map((layer) => layer.id)).size !== layers.length)
       throw new BadRequestException('Text layer ids must be unique');
@@ -1136,6 +1169,8 @@ export class ProductsService {
     if (!baseProductId) {
       if (category.builderType === CASE_BUILDER)
         throw new BadRequestException('Choose your phone model');
+      if (category.builderType === MUG_BUILDER)
+        throw new BadRequestException('The mug studio is not set up yet');
       if (needsBaseProduct(category.builderType))
         throw new BadRequestException('Choose the piece to design on');
       return undefined;
@@ -1151,9 +1186,16 @@ export class ProductsService {
         price: true,
         stock: true,
         sizes: true,
+        printAreas: true,
       },
     });
     if (!base || base.origin !== 'COMPANY' || base.categoryId !== category.id)
+      throw new BadRequestException('Base product not found in this category');
+    // Only the blank mug (the one with a print area) is printed on; ready-made mugs are not.
+    if (
+      category.builderType === MUG_BUILDER &&
+      !this.isBlankMug(base.printAreas)
+    )
       throw new BadRequestException('Base product not found in this category');
     if (!base.isActive)
       throw new BadRequestException(`${base.name} is no longer available`);
@@ -1161,6 +1203,21 @@ export class ProductsService {
     if (!sizes.length && base.stock < 1)
       throw new BadRequestException(`${base.name} is sold out`);
     return { ...base, sizes };
+  }
+
+  /** The blank mug: a mug product whose front print area has a size in mm. */
+  private isBlankMug(printAreas: Prisma.JsonValue | null) {
+    const front =
+      printAreas && typeof printAreas === 'object' && !Array.isArray(printAreas)
+        ? printAreas.front
+        : null;
+    return (
+      !!front &&
+      typeof front === 'object' &&
+      !Array.isArray(front) &&
+      typeof front.widthMm === 'number' &&
+      typeof front.heightMm === 'number'
+    );
   }
 
   /** A sized base product needs one of its sizes, in stock right now. */
