@@ -12,7 +12,9 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
   CopyObjectCommand,
+  GetObjectCommand,
 } from '@aws-sdk/client-s3';
+import { Readable } from 'node:stream';
 import { validateImage } from './image-validation.js';
 import { ImageProcessingService } from './image-processing.service.js';
 
@@ -153,7 +155,55 @@ export class StorageService implements OnModuleDestroy {
     return { key: destination };
   }
 
+  async download(key: string): Promise<{
+    body: Readable;
+    contentType?: string;
+    contentLength?: number;
+  }> {
+    if (
+      typeof key !== 'string' ||
+      key.length > 512 ||
+      !/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*\.(?:png|jpe?g|webp)$/.test(key)
+    )
+      throw new BadRequestException('Invalid image object key');
+    const { client, bucket } = this.connection();
+    try {
+      const object = await client.send(
+        new GetObjectCommand({ Bucket: bucket, Key: key }),
+        { abortSignal: AbortSignal.timeout(15000) },
+      );
+      if (!object.Body || typeof (object.Body as Readable).pipe !== 'function')
+        throw new Error('Image body unavailable');
+      return {
+        body: object.Body as Readable,
+        contentType: object.ContentType,
+        contentLength: object.ContentLength,
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      throw new ServiceUnavailableException(
+        'Image retrieval failed; please try again',
+      );
+    }
+  }
+
   getPublicUrl(key?: string | null): string | null {
+    const proxy = this.config.get<string>('IMAGE_PROXY_URL')?.trim();
+    if (key && proxy) {
+      try {
+        const url = new URL(proxy);
+        if (
+          !['https:', 'http:'].includes(url.protocol) ||
+          url.username ||
+          url.password
+        )
+          return null;
+        url.searchParams.set('key', key);
+        return url.toString();
+      } catch {
+        return null;
+      }
+    }
     const base = this.config.get<string>('R2_PUBLIC_URL')?.trim();
     if (!key || !base) return null;
     try {
