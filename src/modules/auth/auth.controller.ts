@@ -20,10 +20,26 @@ import {
   sessionCookieOptions,
 } from './session-cookie.js';
 import { LoginDto } from './dto/login.dto.js';
+import { GoogleLoginDto } from './dto/google-login.dto.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.type.js';
+
+/** The website gets its session as a cookie and no token in the body; the app gets the token. */
+function respond(
+  session: { accessToken: string; expiresIn: number; user: AuthenticatedUser },
+  request: Request,
+  response: Response,
+) {
+  if (!isWebClient(request.headers)) return session;
+  response.cookie(
+    SESSION_COOKIE,
+    session.accessToken,
+    sessionCookieOptions(session.expiresIn),
+  );
+  return { expiresIn: session.expiresIn, user: session.user };
+}
 
 @Controller('auth')
 export class AuthController {
@@ -38,14 +54,20 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const session = await this.auth.login(dto);
-    if (!isWebClient(request.headers)) return session;
-    response.cookie(
-      SESSION_COOKIE,
-      session.accessToken,
-      sessionCookieOptions(session.expiresIn),
-    );
-    return { expiresIn: session.expiresIn, user: session.user };
+    return respond(await this.auth.login(dto), request, response);
+  }
+
+  // Google sign-in and sign-up for the website and the app. The verified Google ID token
+  // becomes the same session as login above: a cookie for the website, a token for the app.
+  @Post('google')
+  @HttpCode(HttpStatus.OK)
+  async google(
+    @Body() dto: GoogleLoginDto,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const { profileComplete, ...session } = await this.auth.googleLogin(dto);
+    return { ...respond(session, request, response), profileComplete };
   }
 
   // Tokens are stateless, so signing out only removes the website's cookie.

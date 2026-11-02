@@ -64,7 +64,10 @@ model User {
   lastName     String  @map("last_name")
   userName     String? @unique @map("user_name")
   email        String  @unique
-  passwordHash String  @map("password_hash")
+  // Null for accounts created with Google: they have no password until they set one.
+  passwordHash String? @map("password_hash")
+  // The Google account's stable `sub` claim; never the email, which a Google user can change.
+  googleId     String? @unique @map("google_id")
   phone        String?
 
   country    String?

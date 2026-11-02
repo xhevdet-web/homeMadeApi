@@ -6,11 +6,12 @@ import { AuthController } from './auth.controller.js';
 import { JwtStrategy } from './strategies/jwt.strategy.js';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard.js';
 import { AuthService } from './auth.service.js';
+import { GoogleTokenVerifier } from './google-token.verifier.js';
 
 @Module({
   imports: [DatabaseModule, JwtModule.registerAsync({ useFactory: jwtConfig })],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, JwtAuthGuard],
+  providers: [AuthService, JwtStrategy, JwtAuthGuard, GoogleTokenVerifier],
   exports: [AuthService, JwtAuthGuard, JwtStrategy],
 })
 export class AuthModule {}

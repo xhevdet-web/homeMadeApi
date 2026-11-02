@@ -63,6 +63,44 @@ AUTH_COOKIE_SECURE=false   # defaults to true when NODE_ENV=production; forced t
 AUTH_COOKIE_DOMAIN=        # optional, e.g. .example.com to share across subdomains
 ```
 
+## Google sign-in
+
+`POST /api/v1/auth/google` with `{ idToken }`, used by the website and the app for both
+sign-in and sign-up. The response is the same session as `/auth/login` (cookie for the website
+with `X-HomeMade-Client: web`, `{ accessToken, expiresIn, user }` for the app), plus
+`profileComplete`. Every existing endpoint then works unchanged; there is no Google-specific
+authorization and the Google token is never used as the HM Craft session.
+
+- The ID token is verified with `google-auth-library` (signature against Google's keys, issuer
+  `accounts.google.com`, expiry, audience). Accepted audiences: `GOOGLE_WEB_CLIENT_ID` (website
+  and Android), `GOOGLE_IOS_CLIENT_ID`, `GOOGLE_ANDROID_CLIENT_ID`. None set → 503.
+- Identity is the verified `sub`, stored in `users.google_id`. Email, names and role from the
+  request body are never used; `forbidNonWhitelisted` rejects extra fields.
+- Linked `google_id` → that user. Otherwise a verified Google email is required (401 if not).
+- **Linking policy.** If a user with that email exists, Google is linked only after the HM
+  Craft password is sent with the same token: the first request answers 409
+  `{ message, email }`, the apps ask for the password and resend `{ idToken, password }`. A
+  wrong password → 401 `Incorrect password`. HM Craft never verified emails at registration, so
+  a matching email alone doesn't prove the account belongs to the Google user. The password
+  hash is kept, so both ways in keep working. An account already linked to another Google ID
+  is never relinked.
+- No user → a new `CUSTOMER` with `password_hash` NULL (no generated password). Missing
+  `given_name`/`family_name` are stored empty and `profileComplete: false` tells the apps to
+  ask for them; delivery details are asked at checkout as for every customer.
+- Disabled accounts are refused (401) whichever way they sign in. Password login for a
+  Google-only account fails like a wrong password; change-password answers 400.
+- Errors stay generic (`Unable to sign in with Google`) so they reveal nothing about accounts;
+  only the holder of a verified Google token for an email learns that it has an account.
+
+```dotenv
+GOOGLE_WEB_CLIENT_ID=<web client>.apps.googleusercontent.com
+GOOGLE_IOS_CLIENT_ID=<ios client>.apps.googleusercontent.com
+GOOGLE_ANDROID_CLIENT_ID=<android client>.apps.googleusercontent.com
+```
+
+Migration `20261102090000_add_google_sign_in` is additive: `password_hash` becomes nullable and
+`google_id` (unique, nullable) is added. Apply with `prisma migrate deploy`.
+
 ## Public stats
 
 GET /api/v1/stats/public (no auth) returns
