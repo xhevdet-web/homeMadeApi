@@ -33,6 +33,13 @@ export class CategoriesController {
     return this.service.findAll();
   }
 
+  /** Admin: every category with its product and subcategory counts, in one request. */
+  @Get('summary')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  summary() {
+    return this.service.summary();
+  }
+
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.service.findOne(id);

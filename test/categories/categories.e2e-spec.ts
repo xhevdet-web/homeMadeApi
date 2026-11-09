@@ -28,7 +28,8 @@ describe('Categories and SubCategories HTTP CRUD', () => {
   const id = 'ac78a80a-ce2b-4c45-8076-fca001c71418';
   const childId = 'd4dfc7b7-2a71-46c6-bfba-a453d847044f';
   const category = delegate();
-  const subCategory = delegate();
+  const subCategory = { ...delegate(), groupBy: vi.fn() };
+  const product = { groupBy: vi.fn() };
   const parent = { id, name: 'Clothes' };
   const child = {
     id: childId,
@@ -46,6 +47,7 @@ describe('Categories and SubCategories HTTP CRUD', () => {
       .useValue({
         category,
         subCategory,
+        product,
         $transaction: (callback: (tx: unknown) => Promise<unknown>) =>
           callback({ category, subCategory }),
       })
@@ -83,6 +85,40 @@ describe('Categories and SubCategories HTTP CRUD', () => {
     unit: 'cm',
     maxItems: 18,
   };
+  it('summarizes product and subcategory counts per category without one request each', async () => {
+    const emptyId = 'f0c8c7a4-8a7e-4d4f-9a55-0d8c1c6f1b11';
+    category.findMany.mockResolvedValue([
+      parent,
+      { id: emptyId, name: 'Mugs' },
+    ]);
+    product.groupBy.mockResolvedValue([
+      { categoryId: id, origin: 'COMPANY', _count: { _all: 3 } },
+      { categoryId: id, origin: 'CUSTOMER', _count: { _all: 5 } },
+    ]);
+    subCategory.groupBy.mockResolvedValue([
+      { categoryId: id, _count: { _all: 2 } },
+    ]);
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/categories/summary')
+      .expect(200);
+    expect(response.body).toEqual([
+      {
+        ...parent,
+        companyProductCount: 3,
+        customerProductCount: 5,
+        subCategoryCount: 2,
+      },
+      {
+        id: emptyId,
+        name: 'Mugs',
+        companyProductCount: 0,
+        customerProductCount: 0,
+        subCategoryCount: 0,
+      },
+    ]);
+    expect(category.findUnique).not.toHaveBeenCalled();
+  });
+
   it('saves builderType and the studio silhouette from JSON and FormData', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/categories')

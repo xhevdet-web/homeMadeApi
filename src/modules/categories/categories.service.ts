@@ -91,6 +91,38 @@ export class CategoriesService {
     return this.query(() => this.prisma.category.findMany({ orderBy }));
   }
 
+  /**
+   * Admin overview: each category (active or not) with how many company products,
+   * customer designs and subcategories it has. Three queries, however many categories.
+   */
+  async summary() {
+    const [categories, products, subCategories] = await this.query(() =>
+      Promise.all([
+        this.prisma.category.findMany({ orderBy }),
+        this.prisma.product.groupBy({
+          by: ['categoryId', 'origin'],
+          _count: { _all: true },
+        }),
+        this.prisma.subCategory.groupBy({
+          by: ['categoryId'],
+          _count: { _all: true },
+        }),
+      ]),
+    );
+    const productCount = (categoryId: string, origin: string) =>
+      products.find(
+        (row) => row.categoryId === categoryId && row.origin === origin,
+      )?._count._all ?? 0;
+    return categories.map((category) => ({
+      ...category,
+      companyProductCount: productCount(category.id, 'COMPANY'),
+      customerProductCount: productCount(category.id, 'CUSTOMER'),
+      subCategoryCount:
+        subCategories.find((row) => row.categoryId === category.id)?._count
+          ._all ?? 0,
+    }));
+  }
+
   async findOne(id: string) {
     const record = await this.query(() =>
       this.prisma.category.findUnique({
