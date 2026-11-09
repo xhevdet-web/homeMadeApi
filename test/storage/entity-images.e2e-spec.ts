@@ -17,7 +17,13 @@ import { Prisma } from '../../src/generated/prisma/client.js';
 import { setupApp } from '../../src/config/setup-app.js';
 import { setupSwagger } from '../../src/config/setup-swagger.js';
 import sharp from 'sharp';
-import { ForegroundSegmentationService } from '../../src/storage/foreground-segmentation.service.js';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { createWorkerServer } from '../../src/background-worker/worker-server.js';
+import {
+  ForegroundProcessor,
+  type Segmenter,
+} from '../../src/background-worker/foreground-processor.js';
 import { MAX_IMAGE_BYTES } from '../../src/storage/image-validation.js';
 
 const png = Buffer.from(
@@ -35,7 +41,7 @@ const delegate = () => ({
   delete: vi.fn(),
 });
 
-// Design (sub-category) uploads also keep the untouched original for production.
+// Design (sub-category) uploads with background removal also keep the untouched original.
 const originalUploads = (route: string) =>
   route === 'sub-categories' ? ['upload'] : [];
 
@@ -58,7 +64,13 @@ describe('Entity images HTTP', () => {
     commands()
       .filter((command) => command instanceof DeleteObjectCommand)
       .map((command) => (command as DeleteObjectCommand).input.Key);
-  const segment = vi.spyOn(ForegroundSegmentationService.prototype, 'mask');
+  // The real worker pipeline (HTTP server + ForegroundProcessor) with a deterministic mask.
+  const segment = vi.fn<Segmenter['mask']>();
+  const processor = new ForegroundProcessor({
+    mask: (rgb, width, height) => segment(rgb, width, height),
+  });
+  let worker: Server;
+  let workerUrl = '';
   const config = new ConfigService({
     NODE_ENV: 'test',
     R2_ENDPOINT: 'https://test.r2.cloudflarestorage.com',
@@ -78,8 +90,22 @@ describe('Entity images HTTP', () => {
       'JWT_ACCESS_SECRET',
       'image-tests-only-secret-at-least-32-characters',
     );
+    worker = createWorkerServer({
+      run: (image) => processor.process(image),
+      status: () => ({}) as never,
+    });
+    await new Promise<void>((resolve) =>
+      worker.listen(0, '127.0.0.1', resolve),
+    );
+    workerUrl = `http://127.0.0.1:${(worker.address() as AddressInfo).port}`;
     vi.spyOn(config, 'get').mockImplementation((key: string) =>
-      key === 'R2_PUBLIC_URL' ? publicUrl : originalGet(key),
+      key === 'R2_PUBLIC_URL'
+        ? publicUrl
+        : key === 'BACKGROUND_REMOVAL_ENABLED'
+          ? 'true'
+          : key === 'BACKGROUND_REMOVAL_WORKER_URL'
+            ? workerUrl
+            : originalGet(key),
     );
     const module = await Test.createTestingModule({
       imports: [CategoriesModule, SubCategoriesModule, ProductsModule],
@@ -151,11 +177,13 @@ describe('Entity images HTTP', () => {
   });
   afterAll(async () => {
     await app?.close();
+    worker?.closeAllConnections();
+    await new Promise((resolve) => worker?.close(resolve));
     vi.unstubAllEnvs();
   });
 
   it.each(['categories', 'sub-categories', 'products'])(
-    'processes JPEG/PNG/WebP for %s creation and replacement before R2 upload',
+    'processes JPEG/PNG/WebP for %s creation and replacement before R2 upload when removeBackground=true',
     async (route) => {
       publicUrl = 'https://images.example.test';
       for (const format of ['jpeg', 'png', 'webp'] as const)
@@ -183,6 +211,7 @@ describe('Entity images HTTP', () => {
               );
           }
           const response = await req
+            .field('removeBackground', 'true')
             .attach('file', source, {
               filename: 'original.' + format,
               contentType: 'image/' + format,
@@ -226,6 +255,7 @@ describe('Entity images HTTP', () => {
       .auth(token, { type: 'bearer' })
       .field('name', 'Logo')
       .field('categoryId', id)
+      .field('removeBackground', 'true')
       .attach('file', source, 'logo.jpg')
       .expect(201);
     const [display, original] = commands() as PutObjectCommand[];
@@ -493,6 +523,7 @@ describe('Entity images HTTP', () => {
       await request(app.getHttpServer())
         .patch('/api/v1/' + route + '/' + id)
         .auth(token, { type: 'bearer' })
+        .field('removeBackground', 'true')
         .attach('file', source, 'original.jpg')
         .expect(500);
       expect(events).toEqual([
@@ -529,6 +560,7 @@ describe('Entity images HTTP', () => {
             );
         }
         await req
+          .field('removeBackground', 'true')
           .attach('file', png, 'transparent.png')
           .expect(replace ? 200 : 201);
         expect((send.mock.calls[0][0] as PutObjectCommand).input.Body).toEqual(
@@ -549,6 +581,7 @@ describe('Entity images HTTP', () => {
     const response = await request(app.getHttpServer())
       .patch('/api/v1/products/' + id)
       .auth(token, { type: 'bearer' })
+      .field('removeBackground', 'true')
       .attach('file', source, 'original.jpg')
       .expect(503);
     expect(response.text).not.toContain('private-native-detail');
@@ -581,8 +614,9 @@ describe('Entity images HTTP', () => {
         contentType,
       })
       .expect(201);
-    // Category images are background-processed, so opaque sources are stored as PNG.
-    expect(response.body.imageKey.endsWith('.png')).toBe(true);
+    // Background removal is opt-in, so the upload is stored as-is with its own extension.
+    expect(response.body.imageKey.endsWith('.' + extension)).toBe(true);
+    expect(segment).not.toHaveBeenCalled();
   });
 
   it.each(['categories', 'sub-categories', 'products'])(
@@ -613,7 +647,8 @@ describe('Entity images HTTP', () => {
       );
       expect(response.body.imageUrl).toBeNull();
       expect(response.body.isActive).toBe(false);
-      expect(events).toEqual(['upload', ...originalUploads(route), 'create']);
+      // Not opted in: stored once, untouched, with no production original.
+      expect(events).toEqual(['upload', 'create']);
       if (route === 'sub-categories')
         expect(response.body).toMatchObject({
           price: 200,
@@ -657,12 +692,7 @@ describe('Entity images HTTP', () => {
         .auth(token, { type: 'bearer' })
         .attach('file', png, 'new.png')
         .expect(200);
-      expect(events).toEqual([
-        'upload',
-        ...originalUploads(route),
-        'update',
-        'delete',
-      ]);
+      expect(events).toEqual(['upload', 'update', 'delete']);
       expect(deleteKeys()).toEqual([oldKey]);
       expect(response.body.imageUrl).toBe(
         'https://images.example.test/' + response.body.imageKey,

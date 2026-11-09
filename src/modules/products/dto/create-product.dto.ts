@@ -117,8 +117,9 @@ export class CreateProductDto {
   sortOrder?: number;
 
   /**
-   * Upload only: false stores the product images untouched, e.g. phone case templates
-   * whose overlay must stay aligned with them pixel for pixel.
+   * Upload only: true removes the background of the product images (when the server
+   * enables it). Omitted or false stores them untouched, e.g. phone case templates whose
+   * overlay must stay aligned with them pixel for pixel.
    */
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsBoolean()

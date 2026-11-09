@@ -1,15 +1,18 @@
 import sharp from 'sharp';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { ForegroundSegmentationService } from '../../src/storage/foreground-segmentation.service.js';
-import { ImageProcessingService } from '../../src/storage/image-processing.service.js';
+import { ForegroundSegmenter } from '../../src/background-worker/foreground-segmenter.js';
+import { ForegroundProcessor } from '../../src/background-worker/foreground-processor.js';
 
 // Opt in: requires the provisioned BiRefNet General Lite model and real CPU inference, never contacts R2.
 describe.skipIf(process.env.RUN_BACKGROUND_MODEL_TESTS !== '1')(
   'Real BiRefNet foreground segmentation',
   () => {
-    const segmentation = new ForegroundSegmentationService();
-    const processor = new ImageProcessingService(segmentation);
-    afterAll(async () => segmentation.onModuleDestroy());
+    // The same classes the worker's job process runs, called directly (no API, no R2).
+    const segmentation = new ForegroundSegmenter({
+      modelPath: process.env.BACKGROUND_REMOVAL_MODEL_PATH,
+    });
+    const processor = new ForegroundProcessor(segmentation);
+    afterAll(async () => segmentation.release());
     it.each(['jpeg', 'png'] as const)(
       'keeps the real bracelet beads and clasp while removing the textured center (%s)',
       async (format) => {
@@ -23,12 +26,7 @@ describe.skipIf(process.env.RUN_BACKGROUND_MODEL_TESTS !== '1')(
           format === 'jpeg' ? source : await sharp(source).png().toBuffer();
         const capture = vi.spyOn(segmentation, 'mask');
         try {
-          const result = await processor.process({
-            buffer,
-            size: buffer.length,
-            originalname: 'bracelet.' + format,
-            mimetype: format === 'jpeg' ? 'image/jpeg' : 'image/png',
-          } as Express.Multer.File);
+          const { image } = await processor.process(buffer);
           const alpha = (await capture.mock.results.at(-1)!.value) as Buffer;
           const { width, height } = await sharp(buffer).metadata();
           expect([width, height]).toEqual([482, 637]);
@@ -58,15 +56,15 @@ describe.skipIf(process.env.RUN_BACKGROUND_MODEL_TESTS !== '1')(
               alpha[y * width! + x],
               `Background at ${x},${y}`,
             ).toBeLessThan(10);
-          expect(result.mimetype).toBe('image/png');
+          expect((await sharp(image!).metadata()).format).toBe('png');
           await mkdir('.temp/background-verification', { recursive: true });
           await writeFile(
             '.temp/background-verification/bracelet-' +
               format +
               '-processed.png',
-            result.buffer,
+            image!,
           );
-          await sharp(result.buffer)
+          await sharp(image!)
             .flatten({ background: '#ffffff' })
             .png()
             .toFile(
@@ -93,14 +91,9 @@ describe.skipIf(process.env.RUN_BACKGROUND_MODEL_TESTS !== '1')(
       <ellipse cx="256" cy="147" rx="16" ry="6" fill="#555560"/>
     </svg>`);
         const buffer = await sharp(svg).toFormat(format).toBuffer();
-        const result = await processor.process({
-          buffer,
-          size: buffer.length,
-          originalname: 'pearl.' + format,
-          mimetype: format === 'jpeg' ? 'image/jpeg' : 'image/' + format,
-        } as Express.Multer.File);
-        expect(result.mimetype).toBe('image/png');
-        const { data, info } = await sharp(result.buffer)
+        const { image } = await processor.process(buffer);
+        expect((await sharp(image!).metadata()).format).toBe('png');
+        const { data, info } = await sharp(image!)
           .raw()
           .toBuffer({ resolveWithObject: true });
         expect(info.channels).toBe(4);
@@ -131,7 +124,7 @@ describe.skipIf(process.env.RUN_BACKGROUND_MODEL_TESTS !== '1')(
         );
         await writeFile(
           '.temp/background-verification/pearl-' + format + '-processed.png',
-          result.buffer,
+          image!,
         );
       },
       60000,

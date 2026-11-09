@@ -1,8 +1,8 @@
 import { BadRequestException } from '@nestjs/common';
 import { extname } from 'node:path';
+import { MAX_IMAGE_BYTES } from './image-limits.js';
 
-export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-export const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+export { MAX_IMAGE_BYTES, IMAGE_MIME_TYPES } from './image-limits.js';
 
 export function validateImage(file: Express.Multer.File | undefined): string {
   if (!file?.buffer?.length)

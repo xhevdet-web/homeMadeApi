@@ -71,7 +71,10 @@ export class UpdateSubCategoryDto {
   @IsBoolean()
   trackStock?: boolean;
 
-  /** Upload option. false keeps fine logos and lettering exactly as uploaded. */
+  /**
+   * Upload option. true removes the background (when the server enables it); omitted or
+   * false keeps fine logos and lettering exactly as uploaded.
+   */
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsBoolean()
   removeBackground?: boolean;

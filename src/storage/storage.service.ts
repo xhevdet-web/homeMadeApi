@@ -16,7 +16,10 @@ import {
 } from '@aws-sdk/client-s3';
 import { Readable } from 'node:stream';
 import { validateImage } from './image-validation.js';
-import { ImageProcessingService } from './image-processing.service.js';
+import { BackgroundRemovalService } from './background-removal.service.js';
+
+// Only entity display images can opt in to background removal.
+const BACKGROUND_REMOVAL_FOLDERS = ['categories', 'subcategories', 'products'];
 
 @Injectable()
 export class StorageService implements OnModuleDestroy {
@@ -25,9 +28,16 @@ export class StorageService implements OnModuleDestroy {
 
   constructor(
     @Inject(ConfigService) private readonly config: ConfigService,
-    @Inject(ImageProcessingService)
-    private readonly processing = new ImageProcessingService(),
+    @Inject(BackgroundRemovalService)
+    private readonly backgroundRemoval: BackgroundRemovalService = new BackgroundRemovalService(
+      config,
+    ),
   ) {}
+
+  /** True only for an explicit `removeBackground: true` while BACKGROUND_REMOVAL_ENABLED is on. */
+  removesBackground(requested: unknown): boolean {
+    return this.backgroundRemoval.shouldRemove(requested);
+  }
 
   private connection() {
     if (!this.client) {
@@ -70,8 +80,9 @@ export class StorageService implements OnModuleDestroy {
   async upload(
     file: Express.Multer.File,
     folder = 'uploads',
-    // false keeps the upload untouched (fine logos, lettering, production originals).
-    process = true,
+    // Opt-in: only true sends the image to the background-removal worker. When the feature
+    // is disabled the upload is stored unchanged and no model is ever involved.
+    removeBackground = false,
   ): Promise<{ key: string }> {
     validateImage(file);
     if (
@@ -79,9 +90,9 @@ export class StorageService implements OnModuleDestroy {
       !/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(folder)
     )
       throw new BadRequestException('Invalid storage folder');
-    // Entity folders select processing centrally for both create and replacement uploads.
-    if (process && ['categories', 'subcategories', 'products'].includes(folder))
-      file = await this.processing.process(file);
+    // Runs before any R2 write, so a failed or timed-out job leaves nothing to clean up.
+    if (removeBackground && BACKGROUND_REMOVAL_FOLDERS.includes(folder))
+      file = await this.backgroundRemoval.remove(file);
     const extension = validateImage(file);
     const key = folder + '/' + randomUUID() + extension;
     const { client, bucket } = this.connection();
@@ -187,25 +198,19 @@ export class StorageService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Public images are delivered straight from R2 (or the CDN in front of it) whenever
+   * R2_PUBLIC_URL is configured. IMAGE_PROXY_URL is an optional fallback for deployments
+   * without a public bucket URL; it routes images through the API's /images endpoint.
+   */
   getPublicUrl(key?: string | null): string | null {
-    const proxy = this.config.get<string>('IMAGE_PROXY_URL')?.trim();
-    if (key && proxy) {
-      try {
-        const url = new URL(proxy);
-        if (
-          !['https:', 'http:'].includes(url.protocol) ||
-          url.username ||
-          url.password
-        )
-          return null;
-        url.searchParams.set('key', key);
-        return url.toString();
-      } catch {
-        return null;
-      }
-    }
+    if (!key) return null;
+    return this.directUrl(key) ?? this.proxyUrl(key);
+  }
+
+  private directUrl(key: string): string | null {
     const base = this.config.get<string>('R2_PUBLIC_URL')?.trim();
-    if (!key || !base) return null;
+    if (!base) return null;
     try {
       const url = new URL(base);
       if (
@@ -221,6 +226,24 @@ export class StorageService implements OnModuleDestroy {
         '/' +
         key.split('/').map(encodeURIComponent).join('/')
       );
+    } catch {
+      return null;
+    }
+  }
+
+  private proxyUrl(key: string): string | null {
+    const proxy = this.config.get<string>('IMAGE_PROXY_URL')?.trim();
+    if (!proxy) return null;
+    try {
+      const url = new URL(proxy);
+      if (
+        !['https:', 'http:'].includes(url.protocol) ||
+        url.username ||
+        url.password
+      )
+        return null;
+      url.searchParams.set('key', key);
+      return url.toString();
     } catch {
       return null;
     }

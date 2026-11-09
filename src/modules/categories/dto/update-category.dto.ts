@@ -70,4 +70,9 @@ export class UpdateCategoryDto {
   @Min(0)
   @Max(2147483647)
   sortOrder?: number;
+
+  /** Upload option. true removes the background (when the server enables it); omitted keeps the image untouched. */
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsBoolean()
+  removeBackground?: boolean;
 }

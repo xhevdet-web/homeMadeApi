@@ -1,0 +1,25 @@
+# HomeMade API. Never loads ONNX: background removal goes to homemade-bg-worker.service.
+[Unit]
+Description=HomeMade API
+After=network.target postgresql.service
+Wants=homemade-bg-worker.service
+
+[Service]
+Type=simple
+User=homemade
+Group=homemade
+WorkingDirectory=/opt/homemade/homeMadeApi
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node dist/main.js
+Restart=always
+RestartSec=3
+# The API normally stays well below this; the cap catches leaks without touching the worker.
+MemoryMax=1536M
+# Protect the API from the kernel OOM killer under host-wide memory pressure.
+OOMScoreAdjust=-500
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

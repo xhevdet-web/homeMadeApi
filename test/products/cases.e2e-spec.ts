@@ -9,7 +9,7 @@ import sharp from 'sharp';
 import { ProductsModule } from '../../src/modules/products/products.module.js';
 import { PrismaService } from '../../src/database/prisma.service.js';
 import { setupApp } from '../../src/config/setup-app.js';
-import { ForegroundSegmentationService } from '../../src/storage/foreground-segmentation.service.js';
+import { BackgroundRemovalService } from '../../src/storage/background-removal.service.js';
 
 // Phone cases: COMPANY products are the phone models (template, overlay, print area,
 // stock); a customer design is one library design or own photo placed on a model.
@@ -43,7 +43,7 @@ describe('Phone case studio HTTP', () => {
   const order = delegate();
   const tx = { category, subCategory, product, order, $queryRaw: vi.fn() };
   const send = vi.spyOn(S3Client.prototype, 'send');
-  const segment = vi.spyOn(ForegroundSegmentationService.prototype, 'mask');
+  const segment = vi.spyOn(BackgroundRemovalService.prototype, 'remove');
   const putKeys = () =>
     send.mock.calls
       .map(([command]) => command as unknown)
@@ -135,9 +135,7 @@ describe('Phone case studio HTTP', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     send.mockImplementation(async () => ({}) as never);
-    segment.mockImplementation(async (_rgb, width, height) =>
-      Buffer.alloc(width * height, 255),
-    );
+    segment.mockImplementation(async (file) => file);
     category.findUnique.mockResolvedValue({
       id: categoryId,
       builderType: 'CASE',

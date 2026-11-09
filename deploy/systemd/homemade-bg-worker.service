@@ -1,0 +1,40 @@
+# Background-removal worker: runs BiRefNet/ONNX inference outside the API process.
+# Install: see docs/background-removal-worker.md. Adjust User, WorkingDirectory and the node path.
+[Unit]
+Description=HomeMade background-removal worker
+After=network.target
+
+[Service]
+Type=simple
+User=homemade
+Group=homemade
+WorkingDirectory=/opt/homemade/homeMadeApi
+# The worker reads .env from WorkingDirectory itself (dotenv), like the API.
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node dist/background-worker/main.js
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=10
+
+# Memory: BiRefNet General Lite needs ~5.4 GB per image. The cap applies to the supervisor
+# and its job process together; the worker kills its own job process earlier, at
+# BACKGROUND_REMOVAL_MAX_RSS_MB (6144 by default). Never swap: inference would crawl past the timeout.
+MemoryMax=6500M
+MemorySwapMax=0
+# If the kernel kills the job process, keep the supervisor running: it answers 503 and
+# starts a fresh job process for the next upload.
+OOMPolicy=continue
+# Under host-wide memory pressure, this service dies before the API.
+OOMScoreAdjust=500
+
+# CPU: inference must not starve the API or PostgreSQL.
+Nice=10
+CPUWeight=20
+IOWeight=20
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

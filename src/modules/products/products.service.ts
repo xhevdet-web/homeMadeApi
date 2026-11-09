@@ -159,7 +159,8 @@ export class ProductsService {
     }
     const inventory = company ? this.companyInventory(dto) : undefined;
     const printAreas = company ? validatePrintAreas(dto.printAreas) : undefined;
-    const process = dto.removeBackground !== false;
+    // Opt-in only: a missing removeBackground stores the images unchanged.
+    const process = this.images.removesBackground(dto.removeBackground);
     return this.checkUploadTypes(dto.categoryId, customDesigns)
       .then(() => assertSeeThroughOverlay(overlayImage))
       .then(() =>
@@ -541,7 +542,8 @@ export class ProductsService {
   ) {
     this.requireAdmin(user);
     const printAreas = validatePrintAreas(dto.printAreas);
-    const process = dto.removeBackground !== false;
+    // Opt-in only: a missing removeBackground stores the images unchanged.
+    const process = this.images.removesBackground(dto.removeBackground);
     return assertSeeThroughOverlay(overlayImage).then(() =>
       this.images.saveMany(
         [

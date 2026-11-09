@@ -91,6 +91,13 @@ class MultipartFieldsInterceptor implements NestInterceptor {
   }
 }
 
+const REMOVE_BACKGROUND = {
+  type: 'boolean',
+  default: false,
+  description:
+    'Upload only, opt-in. true removes the image background in the background-removal worker when the server sets BACKGROUND_REMOVAL_ENABLED=true (otherwise the image is stored unchanged). Omitted or false stores the upload untouched, e.g. fine logos, lettering and phone case templates.',
+};
+
 export function ImageUpload(
   entity:
     | 'category'
@@ -113,6 +120,7 @@ export function ImageUpload(
     },
   };
   if (entity === 'category') {
+    properties.removeBackground = REMOVE_BACKGROUND;
     properties.designCategoryId = {
       type: 'string',
       format: 'uuid',
@@ -239,11 +247,7 @@ export function ImageUpload(
         description:
           'false for unlimited printed designs; physical items keep stock.',
       },
-      removeBackground: {
-        type: 'boolean',
-        description:
-          'Upload only. false keeps fine logos and lettering exactly as uploaded.',
-      },
+      removeBackground: REMOVE_BACKGROUND,
     });
   if (entity === 'product')
     Object.assign(properties, {
@@ -303,11 +307,7 @@ export function ImageUpload(
         minimum: 0,
         description: 'COMPANY catalog order within the category, lower first.',
       },
-      removeBackground: {
-        type: 'boolean',
-        description:
-          'Upload only. false stores the product images untouched (phone case templates).',
-      },
+      removeBackground: REMOVE_BACKGROUND,
       overlayImage: {
         type: 'string',
         format: 'binary',

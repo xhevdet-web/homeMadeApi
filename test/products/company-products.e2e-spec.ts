@@ -18,6 +18,7 @@ describe('Company product management', () => {
     product,
   };
   const images = {
+    removesBackground: (requested: unknown) => requested === true,
     saveMany: vi.fn(
       async (_files, callback) =>
         (await callback(['products/photo.png', undefined])).result,

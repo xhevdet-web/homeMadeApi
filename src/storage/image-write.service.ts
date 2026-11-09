@@ -13,18 +13,29 @@ export class ImageWriteService {
     @Inject(StorageService) private readonly storage: StorageService,
   ) {}
 
+  /** Whether a request's `removeBackground` value actually turns background removal on. */
+  removesBackground(requested: unknown): boolean {
+    return this.storage.removesBackground(requested);
+  }
+
   async save<T>(
     file: Express.Multer.File | undefined,
     folder: string,
     write: (
       key?: string,
     ) => Promise<{ result: T; oldKeys?: (string | null | undefined)[] }>,
+    process = false,
   ): Promise<T> {
-    return this.saveMany([{ file, folder }], ([key]) => write(key));
+    return this.saveMany([{ file, folder, process }], ([key]) => write(key));
   }
 
   async saveMany<T>(
-    uploads: { file?: Express.Multer.File; folder: string; process?: boolean }[],
+    // `process` requests background removal; it is never applied unless set to true.
+    uploads: {
+      file?: Express.Multer.File;
+      folder: string;
+      process?: boolean;
+    }[],
     write: (keys: (string | undefined)[]) => Promise<{
       result: T;
       oldKeys?: (string | null | undefined)[];
@@ -36,7 +47,7 @@ export class ImageWriteService {
       for (const { file, folder, process } of uploads)
         keys.push(
           file
-            ? (await this.storage.upload(file, folder, process ?? true)).key
+            ? (await this.storage.upload(file, folder, process === true)).key
             : undefined,
         );
       saved = await write(keys);

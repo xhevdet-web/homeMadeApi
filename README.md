@@ -91,6 +91,14 @@ For `docker compose up --build`, set the DATABASE_URL hostname to
 `host.docker.internal` in the environment file. Use `localhost` when running
 Nest directly on Windows. Docker does not create tables, migrate, or seed.
 
+### Background removal worker
+
+Optional background removal runs in a separate process, `pnpm start:worker`
+(`dist/background-worker/main.js`). The API never loads ONNX. The feature is off until
+`BACKGROUND_REMOVAL_ENABLED=true`, and each upload opts in with `removeBackground: true`.
+For local and systemd setup, memory sizing and image delivery (`R2_PUBLIC_URL` /
+`IMAGE_PROXY_URL`), see [docs/background-removal-worker.md](docs/background-removal-worker.md).
+
 ## Prisma
 
 The CLI and client are pinned to the same version. `prisma.config.ts` points to

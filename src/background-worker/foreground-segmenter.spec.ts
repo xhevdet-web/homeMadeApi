@@ -1,14 +1,15 @@
-import { ForegroundSegmentationService } from './foreground-segmentation.service.js';
+import { ForegroundSegmenter } from './foreground-segmenter.js';
 
 const runtime = vi.hoisted(() => ({ run: vi.fn(), release: vi.fn() }));
+const createSession = vi.hoisted(() =>
+  vi.fn(async (_path: string, _options: object) => ({
+    inputNames: ['input'],
+    outputNames: ['mask'],
+    ...runtime,
+  })),
+);
 vi.mock('onnxruntime-node', () => ({
-  InferenceSession: {
-    create: vi.fn(async () => ({
-      inputNames: ['input'],
-      outputNames: ['mask'],
-      ...runtime,
-    })),
-  },
+  InferenceSession: { create: createSession },
   Tensor: class {
     constructor(
       public type: string,
@@ -30,7 +31,7 @@ describe('Segmentation geometry', () => {
       for (let y = 450; y < 575; y++)
         for (let x = 190; x < 270; x++) logits[y * 1024 + x] = 12;
       runtime.run.mockResolvedValue({ mask: { data: logits } });
-      const segmentation = new ForegroundSegmentationService();
+      const segmentation = new ForegroundSegmenter();
       try {
         const mask = await segmentation.mask(
           Buffer.alloc(width * height * 3, 128),
@@ -48,8 +49,28 @@ describe('Segmentation geometry', () => {
           mask[Math.floor(height * 0.1) * width + Math.floor(width * 0.22)],
         ).toBe(0);
       } finally {
-        await segmentation.onModuleDestroy();
+        await segmentation.release();
       }
     },
   );
+});
+
+describe('Segmentation runtime options', () => {
+  it('disables the CPU arena, memory pattern and graph rewrites that raise peak memory', async () => {
+    const segmentation = new ForegroundSegmenter({ threads: 1 });
+    try {
+      await segmentation.load();
+      expect(createSession).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          enableCpuMemArena: false,
+          enableMemPattern: false,
+          graphOptimizationLevel: 'disabled',
+          intraOpNumThreads: 1,
+        }),
+      );
+    } finally {
+      await segmentation.release();
+    }
+  });
 });
