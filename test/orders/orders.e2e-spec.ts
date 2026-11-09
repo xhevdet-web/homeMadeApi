@@ -562,6 +562,45 @@ describe('Orders HTTP', () => {
     expect(product.update).not.toHaveBeenCalled();
   });
 
+  it('orders a ready-made phone case by its own stock and price, never its phone model', async () => {
+    const phoneModel = hoodie({
+      name: 'iPhone 15',
+      sizes: null,
+      stock: 9,
+      category: { ...productRecord.category, builderType: 'CASE' },
+    });
+    const readyCase = hoodie({
+      id: productId,
+      name: 'iPhone 15 Marble',
+      price: 2700,
+      stock: 2,
+      sizes: null,
+      printAreas: null,
+      color: null,
+      colorHex: null,
+      baseProductId: baseId,
+      category: { ...productRecord.category, builderType: 'CASE' },
+    });
+    products(readyCase, phoneModel);
+    product.updateMany.mockResolvedValue({ count: 1 });
+    await post(body).expect(201);
+    // No design step and no phone model: only the case itself is taken from stock.
+    expect(product.updateMany).toHaveBeenCalledTimes(1);
+    expect(product.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: productId,
+        origin: 'COMPANY',
+        isActive: true,
+        stock: { gte: 1 },
+      },
+      data: { stock: { decrement: 1 } },
+    });
+    expect(order.create.mock.calls[0][0].data).toMatchObject({
+      quantity: 1,
+      totalPrice: 2700,
+    });
+  });
+
   it('rejects a design whose base size sold out', async () => {
     products(design({ selectedSize: { id: 'XL', name: 'XL' } }), hoodie());
     const response = await post(body).expect(400);

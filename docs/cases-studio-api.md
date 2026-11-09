@@ -24,6 +24,38 @@ the camera opening: there the template itself is shown again above the artwork, 
 model keeps its real camera and the image never covers it. Responses include `overlayImageUrl`; `baseProduct` (on designs and
 order snapshots) carries `deviceBrand` and `overlayImageKey/Url` too.
 
+## Ready-made cases: COMPANY products linked to a phone model
+
+A finished printed case sold as it is (e.g. "iPhone 15 – Marble") is also a COMPANY
+product of the CASE category. It has **no `printAreas`** and **`baseProductId`** set to
+the phone model it fits. Every COMPANY product of a CASE category is exactly one of the
+two kinds, and the API rejects anything else:
+
+| | `printAreas.front` | `baseProductId` |
+| --- | --- | --- |
+| Phone model (studio step 1) | set | `null` |
+| Ready-made case ("Or pick one we made") | `null` | the phone model's id |
+
+So clients tell them apart with `baseProductId`: `null` → phone model, set → ready-made.
+
+- `POST /products` (admin, multipart): `origin=COMPANY`, `categoryId`, `name`, `price`,
+  `stock`, `file` (the photo of the finished case; `backImage` optional),
+  `baseProductId`, no `printAreas`. `deviceBrand`, `sortOrder` and `description` are
+  optional.
+- `PATCH /products/:id` (admin): `baseProductId` moves it to another model; `""` (or
+  `null`) unlinks it, together with a `printAreas.front` to make it a phone model.
+- The linked product must be an active phone model (COMPANY, same category, with
+  `printAreas.front`, no base product of its own). A phone model that designs or
+  ready-made cases are made on cannot stop being one or leave its category.
+- Only CASE products can be linked; any other COMPANY product with `baseProductId` is
+  rejected.
+- Responses include `baseProduct` (name, `deviceBrand`, `imageUrl`, …) as for designs.
+- Ordering one works like any COMPANY product: its own `price`, one taken from its own
+  `stock`, no design step, and the phone model's stock is untouched.
+- Customers cannot design on a ready-made case: it is rejected as a base product.
+- In `GET /products?page=…`, ready-made cases count as `type=ready`; phone models and
+  customer case designs stay `custom`.
+
 ## Designs: SubCategories
 
 Library artwork is ordinary SubCategories of the category (`price` is an optional premium,

@@ -142,3 +142,8 @@ export function validatePrintAreas(
     ...(camera ? { camera } : {}),
   };
 }
+
+/** Stored or validated print areas with a front area, e.g. a phone model or the blank mug. */
+export function hasFrontArea(printAreas: unknown) {
+  return object(printAreas) && object(printAreas.front);
+}

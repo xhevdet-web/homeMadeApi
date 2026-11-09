@@ -199,7 +199,8 @@ const area = { x: 0.2, y: 0.2, width: 0.6, height: 0.6 };
  *  04 Empty Sizes Charm  ready   1500  T7   sizes [] → stock 0: sold out
  *  05 White Mug          custom  1200  T6   printAreas.front, sortOrder 1
  *  06 Ceramic Coaster    ready    800  T6   printAreas.front is null, sortOrder 0
- *  07 iPhone 15 Case     custom  2500  T5   CASE category
+ *  07 iPhone 15 Case     custom  2500  T5   CASE phone model (print area)
+ *  12 iPhone 15 Marble   ready   2700  T8   CASE, ready-made: linked to 07, no print area
  *  08 Black Hoodie       custom  3500  T4   APPAREL, every size 0: sold out despite stock 9
  *  09 White Tee          custom  2000  T3   APPAREL, stock 0 but size M has 3: in stock
  *  10 Old Brooch         ready   1000  T2   inactive category
@@ -268,7 +269,18 @@ const company = [
     name: 'iPhone 15 Case',
     price: 2500,
     stock: 7,
+    printAreas: { front: area },
     createdAt: day(5),
+  },
+  // A ready-made printed case, sold as it is, on the phone model it fits.
+  {
+    id: uuid(12),
+    categoryId: categories.cases,
+    baseProductId: uuid(7),
+    name: 'iPhone 15 Marble',
+    price: 2700,
+    stock: 2,
+    createdAt: day(8),
   },
   {
     id: uuid(8),
@@ -347,6 +359,7 @@ const NEWEST = [
   'Gold Ring',
   'Silver Bracelet',
   'Pearl Necklace',
+  'iPhone 15 Marble',
   'Empty Sizes Charm',
   'Ceramic Coaster',
   'White Mug',
@@ -534,15 +547,15 @@ describe.skipIf(!databaseReady)(
         expect(first.meta).toEqual({
           page: 1,
           limit: 4,
-          total: 9,
+          total: 10,
           totalPages: 3,
-          counts: { all: 9, ready: 5, custom: 4 },
+          counts: { all: 10, ready: 6, custom: 4 },
         });
         const second = await page({ ...CATALOG, limit: 4, page: 2 });
         expect(second.names).toEqual(NEWEST.slice(4, 8));
         const last = await page({ ...CATALOG, limit: 4, page: 3 });
-        expect(last.names).toEqual(['White Tee']);
-        expect(last.meta).toMatchObject({ page: 3, total: 9, totalPages: 3 });
+        expect(last.names).toEqual(['Black Hoodie', 'White Tee']);
+        expect(last.meta).toMatchObject({ page: 3, total: 10, totalPages: 3 });
       });
 
       it('returns an empty page beyond the end, not an error', async () => {
@@ -551,16 +564,16 @@ describe.skipIf(!databaseReady)(
         expect(beyond.meta).toEqual({
           page: 7,
           limit: 4,
-          total: 9,
+          total: 10,
           totalPages: 3,
-          counts: { all: 9, ready: 5, custom: 4 },
+          counts: { all: 10, ready: 6, custom: 4 },
         });
       });
 
       it('defaults to 12 per page', async () => {
         const { body } = await get({ ...CATALOG, page: 1 });
         expect(body.meta.limit).toBe(12);
-        expect(body.data).toHaveLength(9);
+        expect(body.data).toHaveLength(10);
         expect(body.data[0]).toMatchObject({
           id: uuid(1),
           category: { name: 'Jewelry' },
@@ -577,7 +590,7 @@ describe.skipIf(!databaseReady)(
               ...(await page({ ...CATALOG, sort, limit: 2, page: n })).names,
             );
           expect(paged).toEqual(all);
-          expect(new Set(paged).size).toBe(9);
+          expect(new Set(paged).size).toBe(10);
         }
       });
 
@@ -606,6 +619,7 @@ describe.skipIf(!databaseReady)(
           'Silver Bracelet',
           'White Tee',
           'iPhone 15 Case',
+          'iPhone 15 Marble',
           'Pearl Necklace',
           'Black Hoodie',
         ]);
@@ -615,6 +629,7 @@ describe.skipIf(!databaseReady)(
         expect((await page({ ...CATALOG, sort: 'price_desc' })).names).toEqual([
           'Pearl Necklace',
           'Black Hoodie',
+          'iPhone 15 Marble',
           'iPhone 15 Case',
           'Gold Ring',
           'Silver Bracelet',
@@ -627,23 +642,24 @@ describe.skipIf(!databaseReady)(
     });
 
     describe('type', () => {
-      it('ready: no print area, not apparel or phone case', async () => {
+      it('ready: no print area, not apparel, or a ready-made phone case', async () => {
         const { names, meta } = await page({ ...CATALOG, type: 'ready' });
         expect(names).toEqual([
           'Gold Ring',
           'Silver Bracelet',
           'Pearl Necklace',
+          'iPhone 15 Marble',
           'Empty Sizes Charm',
           'Ceramic Coaster',
         ]);
         expect(meta).toMatchObject({
-          total: 5,
+          total: 6,
           totalPages: 1,
-          counts: { all: 9, ready: 5, custom: 4 },
+          counts: { all: 10, ready: 6, custom: 4 },
         });
       });
 
-      it('custom: a print area front, or an APPAREL / CASE category', async () => {
+      it('custom: a print area front, APPAREL, or a phone case that is not ready-made', async () => {
         const { names, meta } = await page({ ...CATALOG, type: 'custom' });
         expect(names).toEqual([
           'White Mug',
@@ -654,9 +670,26 @@ describe.skipIf(!databaseReady)(
         // counts ignore type.
         expect(meta).toMatchObject({
           total: 4,
-          counts: { all: 9, ready: 5, custom: 4 },
+          counts: { all: 10, ready: 6, custom: 4 },
         });
       });
+    });
+
+    it('returns a ready-made case with the phone model it fits', async () => {
+      const { body } = await get({
+        ...CATALOG,
+        page: 1,
+        categoryId: categories.cases,
+        type: 'ready',
+      });
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0]).toMatchObject({
+        name: 'iPhone 15 Marble',
+        baseProductId: uuid(7),
+        printAreas: null,
+        baseProduct: { id: uuid(7), name: 'iPhone 15 Case' },
+      });
+      expect(body.meta.counts).toEqual({ all: 2, ready: 1, custom: 1 });
     });
 
     describe('inStock', () => {
@@ -665,6 +698,7 @@ describe.skipIf(!databaseReady)(
         expect(names).toEqual([
           'Gold Ring', // sizes [] with stock 3
           'Silver Bracelet',
+          'iPhone 15 Marble',
           'Ceramic Coaster',
           'White Mug',
           'iPhone 15 Case',
@@ -674,8 +708,8 @@ describe.skipIf(!databaseReady)(
         expect(names).not.toContain('Empty Sizes Charm'); // sizes [] with stock 0
         expect(names).not.toContain('Black Hoodie'); // every size 0, stock 9
         expect(meta).toMatchObject({
-          total: 6,
-          counts: { all: 6, ready: 3, custom: 3 },
+          total: 7,
+          counts: { all: 7, ready: 4, custom: 3 },
         });
       });
 

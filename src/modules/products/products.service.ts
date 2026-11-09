@@ -26,7 +26,7 @@ import {
   selectedSizeId,
   type SizeStock,
 } from './product-sizes.js';
-import { validatePrintAreas } from './print-area.js';
+import { hasFrontArea, validatePrintAreas } from './print-area.js';
 import { listingQueries } from './product-listing.js';
 import { assertSeeThroughOverlay } from './case-overlay.js';
 import {
@@ -142,9 +142,9 @@ export class ProductsService {
     const company = dto.origin === 'COMPANY';
     if (company) {
       this.requireAdmin(user);
-      if (customDesigns.length || dto.baseProductId !== undefined)
+      if (customDesigns.length)
         throw new BadRequestException(
-          'Company products cannot include uploaded designs or a base product',
+          'Company products cannot include uploaded designs',
         );
       if (!file)
         throw new BadRequestException(
@@ -229,6 +229,16 @@ export class ProductsService {
                       category,
                       dto.baseProductId,
                     );
+                // A ready-made phone case names the model it fits.
+                const phoneModelId = company
+                  ? await this.companyBase(
+                      tx,
+                      category,
+                      printAreas,
+                      dto.baseProductId,
+                      { linkChanged: true },
+                    )
+                  : null;
                 const basePrice = base?.price ?? 0;
                 const packaging = await giftPackagingFields(
                   tx,
@@ -268,7 +278,7 @@ export class ProductsService {
                     textLayers: textLayers ?? undefined,
                     createdById: user.id,
                     categoryId: dto.categoryId,
-                    baseProductId: base?.id,
+                    baseProductId: base?.id ?? phoneModelId ?? undefined,
                     name: dto.name,
                     description: dto.description,
 
@@ -589,7 +599,12 @@ export class ProductsService {
                   dto.removeOverlay)
               )
                 throw new BadRequestException(CUSTOMER_INVENTORY);
+              if (!company && dto.baseProductId !== undefined)
+                throw new BadRequestException(
+                  'A design keeps its base product; save it as a new design instead',
+                );
               if (
+                !company &&
                 product.baseProductId &&
                 dto.categoryId !== undefined &&
                 dto.categoryId !== product.categoryId
@@ -642,6 +657,44 @@ export class ProductsService {
                   overlayImageKey ?? (dto.removeOverlay ? null : undefined);
                 if (dto.printAreas !== undefined)
                   data.printAreas = printAreas ?? Prisma.DbNull;
+                // Whether it is a phone model or a ready-made case is checked on the result.
+                if (
+                  dto.printAreas !== undefined ||
+                  dto.baseProductId !== undefined ||
+                  dto.categoryId !== undefined
+                ) {
+                  const moved =
+                    dto.categoryId !== undefined &&
+                    dto.categoryId !== product.categoryId;
+                  const wasPhoneModel =
+                    !product.baseProductId &&
+                    hasFrontArea(product.printAreas) &&
+                    (moved
+                      ? await this.categoryConfiguration(tx, product.categoryId)
+                      : category
+                    ).builderType === CASE_BUILDER;
+                  const phoneModelId = await this.companyBase(
+                    tx,
+                    category,
+                    dto.printAreas === undefined
+                      ? product.printAreas
+                      : printAreas,
+                    dto.baseProductId === undefined
+                      ? product.baseProductId
+                      : dto.baseProductId,
+                    {
+                      productId: product.id,
+                      wasPhoneModel,
+                      linkChanged:
+                        dto.baseProductId !== undefined &&
+                        dto.baseProductId !== product.baseProductId,
+                    },
+                  );
+                  if (dto.baseProductId !== undefined)
+                    data.baseProduct = phoneModelId
+                      ? { connect: { id: phoneModelId } }
+                      : { disconnect: true };
+                }
                 if (dto.items !== undefined || dto.categoryId !== undefined) {
                   const categoryId = dto.categoryId ?? product.categoryId;
                   const calculated = await this.readyMadeItems(
@@ -1238,9 +1291,13 @@ export class ProductsService {
         stock: true,
         sizes: true,
         printAreas: true,
+        baseProductId: true,
       },
     });
     if (!base || base.origin !== 'COMPANY' || base.categoryId !== category.id)
+      throw new BadRequestException('Base product not found in this category');
+    // A ready-made phone case is sold as it is; designs are made on phone models.
+    if (base.baseProductId)
       throw new BadRequestException('Base product not found in this category');
     // Only the blank mug (the one with a print area) is printed on; ready-made mugs are not.
     if (
@@ -1257,6 +1314,78 @@ export class ProductsService {
   }
 
   /** The blank mug: a mug product whose front print area has a size in mm. */
+  /**
+   * COMPANY products of a phone case category are one of two kinds:
+   * - a phone model, the blank customers design on: `printAreas.front`, no base product;
+   * - a ready-made case, sold as it is: no print area, `baseProductId` → the phone model
+   *   it fits.
+   * No other COMPANY product has a base product. Returns the validated phone model id.
+   */
+  private async companyBase(
+    tx: Prisma.TransactionClient,
+    category: { id: string; builderType: string | null },
+    printAreas: unknown,
+    baseProductId: string | null | undefined,
+    {
+      productId,
+      wasPhoneModel = false,
+      linkChanged,
+    }: { productId?: string; wasPhoneModel?: boolean; linkChanged: boolean },
+  ): Promise<string | null> {
+    const phoneCase = category.builderType === CASE_BUILDER;
+    if (baseProductId && !phoneCase)
+      throw new BadRequestException(
+        'Only ready-made phone cases are linked to a phone model',
+      );
+    const model = phoneCase && !baseProductId && hasFrontArea(printAreas);
+    // Designs and ready-made cases made on a phone model need it to stay one.
+    if (productId && wasPhoneModel && !model) {
+      const linked = await tx.product.count({
+        where: { baseProductId: productId },
+      });
+      if (linked)
+        throw new BadRequestException(
+          `${linked} ${linked === 1 ? 'product is' : 'products are'} made on this phone model, so it must stay a phone model in its category`,
+        );
+    }
+    if (!phoneCase) return null;
+    if (baseProductId && hasFrontArea(printAreas))
+      throw new BadRequestException(
+        'A ready-made case has no print area: remove printAreas, or unlink the phone model to make it a phone model',
+      );
+    if (!baseProductId) {
+      if (!model)
+        throw new BadRequestException(
+          'Give a phone model its printable area (printAreas.front), or link a ready-made case to the phone model it fits (baseProductId)',
+        );
+      return null;
+    }
+    if (baseProductId === productId)
+      throw new BadRequestException('A product cannot be its own phone model');
+    const base = await tx.product.findUnique({
+      where: { id: baseProductId },
+      select: {
+        name: true,
+        origin: true,
+        categoryId: true,
+        printAreas: true,
+        baseProductId: true,
+        isActive: true,
+      },
+    });
+    if (
+      !base ||
+      base.origin !== 'COMPANY' ||
+      base.categoryId !== category.id ||
+      base.baseProductId ||
+      !hasFrontArea(base.printAreas)
+    )
+      throw new BadRequestException('Phone model not found in this category');
+    if (linkChanged && !base.isActive)
+      throw new BadRequestException(`${base.name} is no longer available`);
+    return baseProductId;
+  }
+
   private isBlankMug(printAreas: Prisma.JsonValue | null) {
     const front =
       printAreas && typeof printAreas === 'object' && !Array.isArray(printAreas)

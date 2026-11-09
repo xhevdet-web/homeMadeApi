@@ -15,17 +15,19 @@ import {
 
 type Viewer = Pick<AuthenticatedUser, 'id' | 'role'> | undefined;
 
-// Categories whose COMPANY products are always blanks to design on.
-const MADE_TO_ORDER_BUILDERS = ['APPAREL', CASE_BUILDER];
-
 /**
  * Made to order: the product has a print area to design on (`printAreas.front` is set),
- * or its category is an apparel or phone case studio. Every other product is ready-made.
+ * or its category is an apparel studio, or it is a phone case other than a ready-made one
+ * (a COMPANY case linked to the phone model it fits). Every other product is ready-made.
  * Always true or false, never NULL, so `NOT` selects exactly the ready-made products.
  */
 export const IS_CUSTOM = Prisma.sql`(
   COALESCE(jsonb_typeof(p."print_areas" -> 'front'), 'null') <> 'null'
-  OR COALESCE(c."builder_type", '') IN (${Prisma.join(MADE_TO_ORDER_BUILDERS)})
+  OR COALESCE(c."builder_type", '') = 'APPAREL'
+  OR (
+    COALESCE(c."builder_type", '') = ${CASE_BUILDER}
+    AND NOT (p."origin" = 'COMPANY'::"ProductOrigin" AND p."base_product_id" IS NOT NULL)
+  )
 )`;
 
 /**

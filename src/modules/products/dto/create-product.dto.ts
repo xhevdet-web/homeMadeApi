@@ -126,7 +126,10 @@ export class CreateProductDto {
 
   // ---- CUSTOMER ----
 
-  /** The COMPANY product a design is made on; required by APPAREL studios. */
+  /**
+   * CUSTOMER: the COMPANY product a design is made on; required by APPAREL studios.
+   * COMPANY: a ready-made phone case names the phone model it fits.
+   */
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsUUID()
   baseProductId?: string;

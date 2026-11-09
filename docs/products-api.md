@@ -66,8 +66,9 @@ does not match category names. Invalid values return 400, e.g.
 Rules in paginated mode:
 
 - **Made to order (`type=custom`)**: `printAreas.front` is set (not null), or the
-  category's `builderType` is `APPAREL` or `CASE`. **Ready-made (`type=ready`)**: every
-  other product.
+  category's `builderType` is `APPAREL`, or it is a `CASE` product other than a ready-made
+  case (a COMPANY product with `baseProductId`, see `cases-studio-api.md`).
+  **Ready-made (`type=ready`)**: every other product.
 - **Sold out**: with a non-empty `sizes` array, when no size has a `stock` above 0;
   otherwise (`sizes` empty, null or not an array) when `stock` ≤ 0.
 - Only products of **active categories** are listed.
