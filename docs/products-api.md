@@ -32,6 +32,7 @@ Essential Hoodie" and "White Essential Hoodie".
 
 - `GET /products?categoryId=&origin=COMPANY|CUSTOMER&createdById=&isActive=true&search=` —
   filtered in the database. The mobile app requests one category's company products.
+  Returns a plain array. Add `page` for one page of results instead, see below.
 - `GET /products/:id`, `PATCH /products/:id`, `DELETE /products/:id` (admin).
 - `POST /products` — `origin: COMPANY` (admin, multipart with `file`, optional `backImage`),
   or a customer design (default). Apparel designs send `baseProductId` and `selectedSizeId`.
@@ -41,6 +42,70 @@ Essential Hoodie" and "White Essential Hoodie".
 
 Deleting a product that has orders or customer designs made on it is refused (409);
 deactivate it instead.
+
+## Listing with filters, sorting and pages (`GET /products?page=…`)
+
+Without `page`, `GET /products` works exactly as before: a plain array of every match,
+newest first. The mobile app and the studios rely on that. With `page`, the response is
+one page, `{ data, meta }`, like `GET /orders`.
+
+| Param | Values | Meaning |
+|---|---|---|
+| `page` | integer ≥ 1 | Turns on paginated mode. |
+| `limit` | integer 1–48, default 12 | Page size. |
+| `sort` | `newest` (default), `price_asc`, `price_desc` | Ordering. |
+| `type` | `ready`, `custom` | Ready-made or made to order. |
+| `inStock` | `true` / `false` | `true` hides sold-out products. |
+| `search` | 1–100 chars | Name, description, colour **or category name**; case-insensitive, `%` and `_` match literally. |
+| `categoryId`, `origin`, `createdById`, `isActive` | as before | |
+
+`limit`, `sort`, `type` and `inStock` are ignored without `page`, and the array search
+does not match category names. Invalid values return 400, e.g.
+`"sort must be one of: newest, price_asc, price_desc"`.
+
+Rules in paginated mode:
+
+- **Made to order (`type=custom`)**: `printAreas.front` is set (not null), or the
+  category's `builderType` is `APPAREL` or `CASE`. **Ready-made (`type=ready`)**: every
+  other product.
+- **Sold out**: with a non-empty `sizes` array, when no size has a `stock` above 0;
+  otherwise (`sizes` empty, null or not an array) when `stock` ≤ 0.
+- Only products of **active categories** are listed.
+- **Sorting** always ends in the id, so pages never repeat or skip a product:
+  `newest` = `createdAt` desc, `sortOrder` asc, `id` asc; `price_asc` / `price_desc` =
+  `price`, then `createdAt` desc, then `id` asc.
+- **Visibility** is unchanged: a customer's phone case designs are seen only by their
+  creator and admins.
+- A `page` past the end returns `data: []` with the correct `meta`.
+
+```
+GET /api/v1/products?origin=COMPANY&isActive=true&page=2&limit=12&sort=price_asc&type=custom&inStock=true&search=hoodie
+```
+
+```json
+{
+  "data": [{ "id": "…", "name": "Black Essential Hoodie", "price": 3500, "category": { … }, … }],
+  "meta": {
+    "page": 2,
+    "limit": 12,
+    "total": 17,
+    "totalPages": 2,
+    "counts": { "all": 17, "ready": 5, "custom": 12 }
+  }
+}
+```
+
+`data` holds the same product objects as the array mode. `total` and `totalPages` count
+every filter. `counts` counts every filter **except `type`**, so a type filter can show
+how many results it would give; `all = ready + custom`.
+
+The counts and the page's ids are read in one transaction, with no rows loaded just to
+count them. Migration `20261109090000_add_product_listing_indexes` adds
+`(origin, is_active, created_at)` and `(origin, is_active, price)` indexes on `products`.
+
+Tests: `test/products/product-listing.e2e-spec.ts`. Its database part creates a
+throwaway database next to `DATABASE_URL`'s, runs the migrations, and drops the database
+afterwards. It is skipped when no database is reachable or the user cannot create one.
 
 ## Stock
 

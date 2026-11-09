@@ -262,6 +262,9 @@ model Product {
   @@index([giftPackagingId])
   @@index([giftPackagingColorId])
   @@index([isActive])
+  // GET /products?page=…: the catalog (COMPANY, active) newest first or by price.
+  @@index([origin, isActive, createdAt])
+  @@index([origin, isActive, price])
   @@map("products")
 }
 

@@ -27,6 +27,7 @@ import {
   type SizeStock,
 } from './product-sizes.js';
 import { validatePrintAreas } from './print-area.js';
+import { listingQueries } from './product-listing.js';
 import { assertSeeThroughOverlay } from './case-overlay.js';
 import {
   assertNotOverfilled,
@@ -325,8 +326,13 @@ export class ProductsService {
       throw new BadRequestException('Uploaded designs must be PNG images');
   }
 
-  /** Filtered by category, origin, creator, status and a name/description/colour search. */
+  /**
+   * Filtered by category, origin, creator, status and a name/description/colour search.
+   * Without `page`: every match as a plain array (what the app and the studios use).
+   * With `page`: one page `{ data, meta }`, see `findPage`.
+   */
   findAll(query: ProductQueryDto = {}, viewer?: Viewer) {
+    if (query.page !== undefined) return this.findPage(query, viewer);
     const search = query.search
       ? { contains: query.search, mode: 'insensitive' as const }
       : undefined;
@@ -348,6 +354,51 @@ export class ProductsService {
       },
       viewer,
     );
+  }
+
+  /**
+   * One page of products, filtered, sorted and counted in the database. Adds `sort`,
+   * `type` (ready / custom), `inStock`, a search that also matches the category name,
+   * and hides products of inactive categories. `counts` ignore `type`, so each type
+   * filter can show how many results it would give.
+   */
+  private async findPage(query: ProductQueryDto, viewer?: Viewer) {
+    const { page, limit, counts, ids } = listingQueries(query, viewer);
+    const [[count], rows] = await this.query(() =>
+      this.prisma.$transaction([
+        this.prisma.$queryRaw<{ ready: number; custom: number }[]>(counts),
+        this.prisma.$queryRaw<{ id: string }[]>(ids),
+      ]),
+    );
+    const order = rows.map(({ id }) => id);
+    const products = order.length
+      ? await this.query(() =>
+          this.prisma.product.findMany({
+            where: { id: { in: order } },
+            include: productInclude,
+          }),
+        )
+      : [];
+    const byId = new Map(products.map((product) => [product.id, product]));
+    const ready = count?.ready ?? 0;
+    const custom = count?.custom ?? 0;
+    const total =
+      query.type === 'ready'
+        ? ready
+        : query.type === 'custom'
+          ? custom
+          : ready + custom;
+    return {
+      // A product deleted between the two reads is simply left out.
+      data: order.flatMap((id) => byId.get(id) ?? []),
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+        counts: { all: ready + custom, ready, custom },
+      },
+    };
   }
 
   /** Completed customer designs of other users, optionally of one category. */

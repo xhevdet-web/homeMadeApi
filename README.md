@@ -170,3 +170,7 @@ Reusable JWT guard and configuration: see [authentication documentation](docs/au
 ## Email
 
 Order status emails, the Contact us endpoint (POST /api/v1/contact) and the SMTP_* settings: see [email documentation](docs/email.md). Check the SMTP setup with `pnpm mail:test [you@example.com]`.
+
+## Products
+
+Product fields, endpoints and stock: see [products documentation](docs/products-api.md). `GET /api/v1/products` returns a plain array; add `page` (with optional `limit`, `sort`, `type`, `inStock`, `search`) for one filtered, sorted page as `{ data, meta }`.
