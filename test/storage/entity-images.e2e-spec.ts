@@ -25,6 +25,13 @@ import {
   type Segmenter,
 } from '../../src/background-worker/foreground-processor.js';
 import { MAX_IMAGE_BYTES } from '../../src/storage/image-validation.js';
+import { readFileSync } from 'node:fs';
+import { contentBounds } from '../../src/storage/trim-transparent.js';
+
+// A ~175 px bead on a 1200×1600 transparent canvas with a few specks (see fixtures/README).
+const paddedBead = readFileSync(
+  new URL('./fixtures/bead-on-transparent-canvas.png', import.meta.url),
+);
 
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAE0lEQVQYlWP4//9/Az7MMDIUAABUZd9Bgp/b1QAAAABJRU5ErkJggg==',
@@ -291,6 +298,149 @@ describe('Entity images HTTP', () => {
       originalImageKey: undefined,
     });
   });
+  describe('jewelry component images', () => {
+    const jewelry = {
+      id,
+      name: 'Bracelets',
+      builderType: 'JEWELRY',
+      builderConfig: null,
+    };
+    const square = async (body: unknown) => {
+      const { data, info } = await sharp(body as Buffer)
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      expect(info.width).toBe(info.height);
+      expect(Math.abs(info.width - 182)).toBeLessThanOrEqual(2);
+      const box = contentBounds(data, info.width, info.height)!;
+      const gaps = [
+        box.left,
+        box.top,
+        info.width - box.left - box.width,
+        info.height - box.top - box.height,
+      ];
+      expect(Math.max(...gaps) - Math.min(...gaps)).toBeLessThanOrEqual(2);
+    };
+    beforeEach(() => category.findUnique.mockResolvedValue(jewelry));
+
+    it.each([false, true])(
+      'trims the transparent canvas to a centred square and keeps the original (replace=%s)',
+      async (replace) => {
+        subCategory.findUnique.mockResolvedValue({
+          id,
+          categoryId: id,
+          category: jewelry,
+          imageKey: oldKey,
+          originalImageKey: null,
+          effectiveLengthMm: 8,
+        });
+        const req = replace
+          ? request(app.getHttpServer()).patch('/api/v1/sub-categories/' + id)
+          : request(app.getHttpServer())
+              .post('/api/v1/sub-categories')
+              .field('name', 'Red bead')
+              .field('categoryId', id)
+              .field('effectiveLengthMm', '8');
+        const response = await req
+          .auth(token, { type: 'bearer' })
+          .attach('file', paddedBead, 'bead.png')
+          .expect(replace ? 200 : 201);
+        expect(events).toEqual(
+          replace
+            ? ['upload', 'upload', 'update', 'delete']
+            : ['upload', 'upload', 'create'],
+        );
+        const [display, original] = commands() as PutObjectCommand[];
+        expect(display.input.Key).toMatch(
+          /^subcategories\/[a-f0-9-]{36}\.png$/,
+        );
+        expect(display.input.ContentType).toBe('image/png');
+        await square(display.input.Body);
+        expect(original.input.Key).toMatch(/^originals\//);
+        expect(original.input.Body).toEqual(paddedBead);
+        expect(response.body.imageKey).toBe(display.input.Key);
+        expect(response.body.originalImageKey).toBe(original.input.Key);
+        expect(segment).not.toHaveBeenCalled();
+      },
+    );
+
+    it('leaves an opaque JPEG component unchanged apart from keeping the original', async () => {
+      const source = await sharp({
+        create: { width: 64, height: 48, channels: 3, background: 'white' },
+      })
+        .jpeg()
+        .toBuffer();
+      await request(app.getHttpServer())
+        .post('/api/v1/sub-categories')
+        .auth(token, { type: 'bearer' })
+        .field('name', 'Spacer')
+        .field('categoryId', id)
+        .field('effectiveLengthMm', '4')
+        .attach('file', source, 'spacer.jpg')
+        .expect(201);
+      const [display] = commands() as PutObjectCommand[];
+      expect(display.input.Body).toEqual(source);
+      expect(display.input.Key).toMatch(/\.jpg$/);
+    });
+
+    it('stores the upload untouched for components of other categories', async () => {
+      category.findUnique.mockResolvedValue({
+        ...jewelry,
+        builderType: 'GIFT',
+      });
+      await request(app.getHttpServer())
+        .post('/api/v1/sub-categories')
+        .auth(token, { type: 'bearer' })
+        .field('name', 'Ribbon')
+        .field('categoryId', id)
+        .attach('file', paddedBead, 'ribbon.png')
+        .expect(201);
+      expect(putKeys()).toHaveLength(1);
+      expect((send.mock.calls[0][0] as PutObjectCommand).input.Body).toEqual(
+        paddedBead,
+      );
+    });
+
+    it('never trims product images or design previews', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/products')
+        .auth(token, { type: 'bearer' })
+        .field('name', 'Bracelet')
+        .field('categoryId', id)
+        .field(
+          'items',
+          JSON.stringify([{ subCategoryId: childId, quantity: 8 }]),
+        )
+        .attach('file', paddedBead, 'product.png')
+        .attach('designPreview', paddedBead, 'preview.png')
+        .expect(201);
+      const bodies = (commands() as PutObjectCommand[]).map(
+        (command) => command.input.Body,
+      );
+      expect(bodies).toEqual([paddedBead, paddedBead]);
+    });
+
+    it('writes nothing and keeps the old image when trimming fails', async () => {
+      // Valid signature, header and IEND, so validation passes; the pixel data is corrupt.
+      const corrupt = Buffer.from(paddedBead);
+      const idat = corrupt.indexOf('IDAT');
+      corrupt.fill(0xa5, idat + 8, idat + 64);
+      subCategory.findUnique.mockResolvedValue({
+        id,
+        categoryId: id,
+        category: jewelry,
+        imageKey: oldKey,
+        effectiveLengthMm: 8,
+      });
+      await request(app.getHttpServer())
+        .patch('/api/v1/sub-categories/' + id)
+        .auth(token, { type: 'bearer' })
+        .attach('file', corrupt, 'bead.png')
+        .expect(400);
+      expect(send).not.toHaveBeenCalled();
+      expect(subCategory.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('customer artwork for "Your own design"', () => {
     const ownId = 'c1d1f0a4-2a71-46c6-bfba-a453d847044f';
     const baseId = 'c7d1f0a4-2a71-46c6-bfba-a453d847044f';

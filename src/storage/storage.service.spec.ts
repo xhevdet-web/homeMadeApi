@@ -9,6 +9,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import { StorageService } from './storage.service.js';
 import { BackgroundRemovalService } from './background-removal.service.js';
 import { MAX_IMAGE_BYTES } from './image-validation.js';
+import sharp from 'sharp';
 
 const image = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aMioAAAAASUVORK5CYII=',
@@ -310,5 +311,79 @@ describe('Opt-in background removal on upload', () => {
     } finally {
       storage.onModuleDestroy();
     }
+  });
+});
+
+describe('Opt-in trimming of transparent padding on upload', () => {
+  const send = vi.spyOn(S3Client.prototype, 'send');
+  let storage: StorageService;
+  // A 400×400 transparent canvas with an opaque 100×100 square in the middle.
+  const padded = async () => {
+    const rgba = Buffer.alloc(400 * 400 * 4);
+    for (let y = 150; y < 250; y++)
+      for (let x = 150; x < 250; x++) rgba[(y * 400 + x) * 4 + 3] = 255;
+    const buffer = await sharp(rgba, {
+      raw: { width: 400, height: 400, channels: 4 },
+    })
+      .png()
+      .toBuffer();
+    return file({ originalname: 'bead.png', buffer, size: buffer.length });
+  };
+  const body = () => (send.mock.calls[0][0] as PutObjectCommand).input.Body;
+  beforeEach(() => {
+    send.mockReset().mockResolvedValue({} as never);
+    storage = new StorageService(
+      new ConfigService({
+        R2_ENDPOINT: 'https://test-account.r2.cloudflarestorage.com',
+        R2_ACCESS_KEY_ID: 'test-access-key',
+        R2_SECRET_ACCESS_KEY: 'test-secret-key',
+        R2_BUCKET_NAME: 'test-bucket',
+      }),
+    );
+  });
+  afterEach(() => storage.onModuleDestroy());
+
+  it('uploads the trimmed square for components when trim is requested', async () => {
+    const { key } = await storage.upload(
+      await padded(),
+      'subcategories',
+      false,
+      true,
+    );
+    expect(key).toMatch(/^subcategories\/[0-9a-f-]{36}\.png$/);
+    const { width, height } = await sharp(body() as Buffer).metadata();
+    expect([width, height]).toEqual([104, 104]);
+    expect((send.mock.calls[0][0] as PutObjectCommand).input.ContentType).toBe(
+      'image/png',
+    );
+  });
+
+  it.each([
+    ['by default', 'subcategories', false],
+    ['for originals', 'originals', true],
+    ['for products', 'products', true],
+    ['for designs', 'designs', true],
+    ['for categories', 'categories', true],
+  ])('stores the upload byte for byte %s', async (_case, folder, trim) => {
+    const input = await padded();
+    await storage.upload(input, folder, false, trim);
+    expect(body()).toBe(input.buffer);
+  });
+
+  it('writes nothing to R2 when trimming fails', async () => {
+    // Valid PNG signature, header and IEND (so validation passes) but corrupt pixel data.
+    const input = await padded();
+    const buffer = Buffer.from(input.buffer);
+    const idat = buffer.indexOf('IDAT');
+    buffer.fill(0xa5, idat + 8, idat + 40);
+    await expect(
+      storage.upload(
+        { ...input, buffer, size: buffer.length },
+        'subcategories',
+        false,
+        true,
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(send).not.toHaveBeenCalled();
   });
 });

@@ -127,4 +127,28 @@ describe('Image write failure handling', () => {
     expect(remove).not.toHaveBeenCalledWith('products/new.png');
     expect(remove).not.toHaveBeenCalledWith('designs/new.png');
   });
+
+  it('passes trim and background removal only when explicitly true', async () => {
+    await images.saveMany(
+      [
+        { file, folder: 'subcategories', process: false, trim: true },
+        { file, folder: 'originals', process: false, trim: false },
+        { file, folder: 'products' },
+      ],
+      async () => ({ result: 'saved' }),
+    );
+    expect(upload.mock.calls).toEqual([
+      [file, 'subcategories', false, true],
+      [file, 'originals', false, false],
+      [file, 'products', false, false],
+    ]);
+    upload.mockClear();
+    await images.save(file, 'categories', async () => ({ result: 'saved' }));
+    expect(upload).toHaveBeenCalledExactlyOnceWith(
+      file,
+      'categories',
+      false,
+      false,
+    );
+  });
 });

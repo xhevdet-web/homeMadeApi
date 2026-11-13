@@ -17,9 +17,12 @@ import {
 import { Readable } from 'node:stream';
 import { validateImage } from './image-validation.js';
 import { BackgroundRemovalService } from './background-removal.service.js';
+import { trimTransparent } from './trim-transparent.js';
 
 // Only entity display images can opt in to background removal.
 const BACKGROUND_REMOVAL_FOLDERS = ['categories', 'subcategories', 'products'];
+// Only component display images are ever trimmed; originals, products and designs never.
+const TRIM_FOLDERS = ['subcategories'];
 
 @Injectable()
 export class StorageService implements OnModuleDestroy {
@@ -83,6 +86,8 @@ export class StorageService implements OnModuleDestroy {
     // Opt-in: only true sends the image to the background-removal worker. When the feature
     // is disabled the upload is stored unchanged and no model is ever involved.
     removeBackground = false,
+    // Opt-in: crops a transparent image to its visible piece as a centred square.
+    trim = false,
   ): Promise<{ key: string }> {
     validateImage(file);
     if (
@@ -90,9 +95,11 @@ export class StorageService implements OnModuleDestroy {
       !/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(folder)
     )
       throw new BadRequestException('Invalid storage folder');
-    // Runs before any R2 write, so a failed or timed-out job leaves nothing to clean up.
+    // Both run before any R2 write, so a failed or timed-out job leaves nothing to clean up.
     if (removeBackground && BACKGROUND_REMOVAL_FOLDERS.includes(folder))
       file = await this.backgroundRemoval.remove(file);
+    if (trim && TRIM_FOLDERS.includes(folder))
+      file = await trimTransparent(file);
     const extension = validateImage(file);
     const key = folder + '/' + randomUUID() + extension;
     const { client, bucket } = this.connection();

@@ -77,6 +77,7 @@ describe('Products HTTP CRUD', () => {
       'test-only-jwt-secret-at-least-32-characters',
     );
     vi.stubEnv('JWT_ACCESS_EXPIRES_IN', '60m');
+    vi.stubEnv('R2_PUBLIC_URL', 'https://images.example.test');
     const module = await Test.createTestingModule({ imports: [ProductsModule] })
       .overrideProvider(PrismaService)
       .useValue(prisma)

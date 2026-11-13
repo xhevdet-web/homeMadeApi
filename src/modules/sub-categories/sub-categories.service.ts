@@ -17,13 +17,23 @@ import { isJewelryCategory } from '../categories/jewelry-measurement.js';
 const PHYSICAL_SIZE_REQUIRED =
   'Jewelry components need a physical size (effectiveLengthMm): the length one piece occupies on the cord, in millimetres';
 
-// Background removal is opt-in (removeBackground: true, with the feature enabled). When the
-// display image is processed, the untouched upload is also kept so production can print
-// from the original file.
-function uploads(file: Express.Multer.File | undefined, process: boolean) {
+// Background removal is opt-in (removeBackground: true, with the feature enabled). Jewelry
+// components are trimmed to their visible piece, because every client draws the whole
+// image into a square of the piece's physical size. Whenever the display image is
+// processed or trimmed, the untouched upload is also kept so production has the original.
+function uploads(
+  file: Express.Multer.File | undefined,
+  process: boolean,
+  trim: boolean,
+) {
   return [
-    { file, folder: 'subcategories', process },
-    { file: process ? file : undefined, folder: 'originals', process: false },
+    { file, folder: 'subcategories', process, trim },
+    {
+      file: process || trim ? file : undefined,
+      folder: 'originals',
+      process: false,
+      trim: false,
+    },
   ];
 }
 
@@ -46,7 +56,11 @@ export class SubCategoriesService {
     if (isJewelryCategory(category) && dto.effectiveLengthMm == null)
       throw new BadRequestException(PHYSICAL_SIZE_REQUIRED);
     return this.images.saveMany(
-      uploads(file, this.images.removesBackground(dto.removeBackground)),
+      uploads(
+        file,
+        this.images.removesBackground(dto.removeBackground),
+        isJewelryCategory(category),
+      ),
       async ([key, originalKey]) => ({
         result: await this.query(() =>
           this.prisma.subCategory.create({
@@ -136,7 +150,11 @@ export class SubCategoriesService {
     )
       throw new BadRequestException(PHYSICAL_SIZE_REQUIRED);
     return this.images.saveMany(
-      uploads(file, this.images.removesBackground(dto.removeBackground)),
+      uploads(
+        file,
+        this.images.removesBackground(dto.removeBackground),
+        isJewelryCategory(category),
+      ),
       async ([key, originalKey]) => ({
         result: await this.query(() =>
           this.prisma.subCategory.update({

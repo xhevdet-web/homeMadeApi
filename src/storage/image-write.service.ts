@@ -30,11 +30,13 @@ export class ImageWriteService {
   }
 
   async saveMany<T>(
-    // `process` requests background removal; it is never applied unless set to true.
+    // `process` requests background removal and `trim` crops transparent padding (jewelry
+    // components only); neither is ever applied unless set to true.
     uploads: {
       file?: Express.Multer.File;
       folder: string;
       process?: boolean;
+      trim?: boolean;
     }[],
     write: (keys: (string | undefined)[]) => Promise<{
       result: T;
@@ -44,10 +46,17 @@ export class ImageWriteService {
     const keys: (string | undefined)[] = [];
     let saved: Awaited<ReturnType<typeof write>>;
     try {
-      for (const { file, folder, process } of uploads)
+      for (const { file, folder, process, trim } of uploads)
         keys.push(
           file
-            ? (await this.storage.upload(file, folder, process === true)).key
+            ? (
+                await this.storage.upload(
+                  file,
+                  folder,
+                  process === true,
+                  trim === true,
+                )
+              ).key
             : undefined,
         );
       saved = await write(keys);

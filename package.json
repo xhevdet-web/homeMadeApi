@@ -27,7 +27,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "prisma db seed",
     "images:prepare-model": "node scripts/prepare-background-model.mjs",
-    "mail:test": "nest build && node scripts/mail-test.mjs"
+    "mail:test": "nest build && node scripts/mail-test.mjs",
+    "images:trim-jewelry": "nest build && node --experimental-strip-types scripts/trim-jewelry-images.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1141.0",
