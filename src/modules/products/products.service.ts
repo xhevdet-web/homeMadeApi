@@ -70,7 +70,8 @@ const CUSTOM_UPLOAD = 'CUSTOM_UPLOAD';
 // Admin edits rebuild items from stored rows; this carries an existing upload along.
 type StoredItem = ProductItemDto & { customImageKey?: string };
 
-const productInclude = {
+/** A product with everything the apps need to show or reopen it (also used by saved designs). */
+export const productInclude = {
   createdBy: {
     select: { id: true, firstName: true, lastName: true, userName: true },
   },

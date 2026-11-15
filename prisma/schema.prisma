@@ -87,6 +87,7 @@ model User {
   products      Product[]
   orders        Order[]
   notifications Notification[]
+  savedDesigns  SavedDesign[]
 
   @@map("users")
 }
@@ -254,7 +255,8 @@ model Product {
   // Components used in a CUSTOMER design.
   items ProductItem[]
 
-  orders Order[]
+  orders       Order[]
+  savedDesigns SavedDesign[]
 
   @@index([createdById])
   @@index([categoryId, origin])
@@ -447,6 +449,29 @@ model Order {
   // The community gallery: the most recently completed orders.
   @@index([status, completedAt])
   @@map("orders")
+}
+
+// A design the customer chose to keep in "My designs" (Studio → "Save design"). Creating a
+// design or placing an order never creates one. It points at the latest version of the
+// design: a CUSTOMER Product is frozen once it is ordered, so saving changes creates a new
+// Product and moves `productId`, leaving ordered versions and their orders untouched.
+// Deleting a saved design never deletes its Product or any order.
+model SavedDesign {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  productId String   @map("product_id")
+  // The customer's own name for it; starts as the design's product name.
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // "My designs": a customer's saved designs, most recently changed first.
+  @@index([userId, updatedAt])
+  @@index([productId])
+  @@map("saved_designs")
 }
 
 // An update in a customer's in-app notification centre. It belongs to exactly one user and

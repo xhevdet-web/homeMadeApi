@@ -9,6 +9,7 @@ import { ContactModule } from './modules/contact/contact.module.js';
 import { GiftPackagingModule } from './modules/gift-packaging/gift-packaging.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { StatsModule } from './modules/stats/stats.module.js';
+import { SavedDesignsModule } from './modules/saved-designs/saved-designs.module.js';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { StorageModule } from './storage/storage.module.js';
@@ -30,6 +31,7 @@ import { AppService } from './app.service.js';
     GiftPackagingModule,
     NotificationsModule,
     StatsModule,
+    SavedDesignsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
