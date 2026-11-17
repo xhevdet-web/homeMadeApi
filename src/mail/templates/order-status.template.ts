@@ -13,8 +13,7 @@ import {
 // "View your order" opens the order on the website (an https link, which every email client
 // keeps); signed-out customers sign in there first and then land on the order.
 const FOLLOW = 'You can follow your order in the HomeMade Creator app.';
-const FOLLOW_WEB =
-  'You can follow your order on our website or in the HomeMade Creator app.';
+const FOLLOW_WEB = 'You can follow your order on our website:';
 const VIEW_ORDER = 'View your order';
 const THANKS = 'Thank you for choosing HomeMade Creator.';
 const FOOTER =
@@ -59,6 +58,12 @@ function button(url: string, label: string) {
 <td align="center" bgcolor="${COLORS.accent}" style="border-radius:999px;background-color:${COLORS.accent};">
 <a href="${href}" target="_blank" rel="noopener" style="display:inline-block;padding:14px 30px;font-family:${SANS};font-size:15px;line-height:20px;font-weight:bold;color:${COLORS.onNavy};text-decoration:none;border-radius:999px;">${escapeHtml(label)}</a>
 </td></tr></table>`;
+}
+
+/** "You can follow your order on our website: <link>": the address itself, for mail apps that hide buttons. */
+function followLink(url: string) {
+  const href = escapeHtml(url);
+  return `${FOLLOW_WEB} <a href="${href}" target="_blank" rel="noopener" style="color:${COLORS.accent};text-decoration:underline;word-break:break-all;">${href}</a>`;
 }
 
 /** Order number, design, status and total, as a clean two-column receipt. */
@@ -108,7 +113,10 @@ function render(
       ...(input.orderUrl
         ? [button(input.orderUrl, VIEW_ORDER), spacer(24)]
         : []),
-      paragraph(input.orderUrl ? FOLLOW_WEB : FOLLOW, COLORS.muted),
+      paragraph(
+        input.orderUrl ? followLink(input.orderUrl) : FOLLOW,
+        COLORS.muted,
+      ),
       paragraph(
         `${THANKS}<br><span style="color:${COLORS.accent};">— The HomeMade Creator team</span>`,
       ),
@@ -124,7 +132,7 @@ function render(
     ...order.text,
     '',
     ...(input.orderUrl ? [`${VIEW_ORDER}: ${input.orderUrl}`, ''] : []),
-    input.orderUrl ? FOLLOW_WEB : FOLLOW,
+    input.orderUrl ? `${FOLLOW_WEB} ${input.orderUrl}` : FOLLOW,
     '',
     THANKS,
     'The HomeMade Creator team',

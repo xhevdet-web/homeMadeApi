@@ -7,7 +7,7 @@ const env =
     values[key];
 
 describe('order links in emails', () => {
-  it('reads WEB_APP_URL without a trailing slash, and defaults to the dev server outside production', () => {
+  it('reads WEB_APP_URL without a trailing slash, and defaults to the live site or the dev server', () => {
     expect(webAppUrl(env({ WEB_APP_URL: 'https://hm-craft.com/' }))).toBe(
       'https://hm-craft.com',
     );
@@ -15,7 +15,9 @@ describe('order links in emails', () => {
       'https://hm-craft.com/shop',
     );
     expect(webAppUrl(env({}))).toBe('http://localhost:5173');
-    expect(webAppUrl(env({ NODE_ENV: 'production' }))).toBeNull();
+    expect(webAppUrl(env({ NODE_ENV: 'production' }))).toBe(
+      'https://hm-craft.com',
+    );
     expect(webAppUrl(env({ WEB_APP_URL: 'javascript:alert(1)' }))).toBeNull();
     expect(webAppUrl(env({ WEB_APP_URL: 'not a url' }))).toBeNull();
   });
@@ -42,6 +44,14 @@ describe('order links in emails', () => {
     expect(email.html).toContain(`href="${url}"`);
     expect(email.html).toContain('View your order');
     expect(email.text).toContain(`View your order: ${url}`);
+    // The sentence under the receipt names the link too, for mail apps that hide buttons.
+    expect(email.html).toContain(
+      `You can follow your order on our website: <a href="${url}"`,
+    );
+    expect(email.text).toContain(
+      `You can follow your order on our website: ${url}`,
+    );
+    expect(email.html).not.toContain('in the HomeMade Creator app');
   });
 
   it('leaves the link out when no website is configured', () => {

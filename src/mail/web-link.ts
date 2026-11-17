@@ -1,16 +1,20 @@
-/** The website customers open from emails; local development uses the Vite dev server. */
+/** The website customers open from emails: the live site, or the Vite dev server locally. */
+const PROD_WEB_APP_URL = 'https://hm-craft.com';
 const DEV_WEB_APP_URL = 'http://localhost:5173';
 
 /**
- * The website's base URL from WEB_APP_URL (e.g. https://hm-craft.com), without a trailing
- * slash. Outside production it defaults to the local dev server. In production a missing or
- * invalid value gives null: emails then go out without links rather than with a wrong one.
+ * The website's base URL, without a trailing slash. WEB_APP_URL overrides it (e.g. a staging
+ * site); otherwise it is https://hm-craft.com in production and the local dev server elsewhere.
+ * An invalid WEB_APP_URL gives null: emails then go out without links rather than a wrong one.
  */
 export function webAppUrl(
   get: (key: string) => string | undefined,
 ): string | null {
   const raw = get('WEB_APP_URL')?.trim();
-  if (!raw) return get('NODE_ENV') === 'production' ? null : DEV_WEB_APP_URL;
+  if (!raw)
+    return get('NODE_ENV') === 'production'
+      ? PROD_WEB_APP_URL
+      : DEV_WEB_APP_URL;
   try {
     const url = new URL(raw);
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
