@@ -17,11 +17,38 @@ Each model is one COMPANY product of the CASE category (`POST /products`, admin 
 | `file` | the **template**: the empty back of this exact model, ideally a transparent PNG |
 | `overlayImage` | optional transparent PNG drawn above the artwork (edges, camera island), same size as the template; always stored untouched |
 | `removeBackground` | send `false` with a template so it is stored untouched and stays aligned with its overlay |
-| `printAreas` | `{ front: { x, y, width, height, radius? }, camera?: { x, y, width, height, radius? } }` as fractions of the template; `radius` is a share (0–0.5) of the area's width |
+| `printAreas` | `{ front: { x, y, width, height, radius?, radii?, bleed?, safe? }, camera?: { x, y, width, height, radius?, radii? } }` as fractions of the template (see below) |
 
-`front` is the printable area: artwork is clipped to it (rounded by `radius`). `camera` is
+`front` is the printable area: artwork is clipped to it (rounded by its corners). `camera` is
 the camera opening: there the template itself is shown again above the artwork, so each
-model keeps its real camera and the image never covers it. Responses include `overlayImageUrl`; `baseProduct` (on designs and
+model keeps its real camera and the image never covers it, even where the camera reaches
+past the printable edge.
+
+### Template geometry
+
+Positions and sizes are fractions (0–1) of the template image, never screen pixels. Every
+other distance is a fraction of the **area's width**, so corners stay round and each side gets
+the same physical distance on any screen:
+
+| field | where | notes |
+| --- | --- | --- |
+| `radius` | front, camera | one radius for all corners, 0–0.5 |
+| `radii` | front, camera | `{ tl, tr, br, bl }`, each 0–0.5; wins over `radius` (e.g. a case whose bottom curves less than its top). The admin also sends `radius` (= `tl`) for clients that only know one radius |
+| `bleed` | front only | 0–0.1: how far artwork extends past every edge of the printable area, so no unprinted rim shows. The studio makes artwork cover it automatically |
+| `safe` | front only | `{ top, right, bottom, left }`, each 0–0.45: where important content (faces, text, logos) should stay. Shown to customers as a dotted guide while editing; never crops artwork and is never part of a saved preview or print |
+
+The API rejects negative or empty sizes, areas outside the template, radii outside 0–0.5,
+incomplete `radii`/`safe` objects, bleed above 0.1, bleed or `safe` on the camera, and a camera
+that doesn't overlap the printable area. Templates saved before these fields keep their look:
+corners fall back to `radius`, bleed is 0 and there is no safe area. Nothing is migrated: the
+fields live in the existing `printAreas` JSON column.
+
+Customer designs keep their meaning: `x`, `y` are fractions of the printable area and scale 1
+still means "just covers the printable area", so with bleed new designs start slightly above 1.
+The geometry is one module, `HomeMadeWeb/src/studios/cases/geometry.ts`, copied as
+`initial-project-front/src/views/cases/caseGeometry.js` for the admin; both test suites check the
+same expected outlines. A future custom mask (SVG path) would replace the printable outline
+there and keep the rest (camera cut, bleed, guides). Responses include `overlayImageUrl`; `baseProduct` (on designs and
 order snapshots) carries `deviceBrand` and `overlayImageKey/Url` too.
 
 ## Ready-made cases: COMPANY products linked to a phone model

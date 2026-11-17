@@ -217,10 +217,59 @@ describe('Phone case studio HTTP', () => {
       });
     });
 
+    it('stores per-corner radii, bleed and a safe area with the template', async () => {
+      const printAreas = {
+        front: {
+          x: 0.03,
+          y: 0.015,
+          width: 0.94,
+          height: 0.97,
+          radius: 0.18,
+          radii: { tl: 0.18, tr: 0.18, br: 0.12, bl: 0.12 },
+          bleed: 0.03,
+          safe: { top: 0.3, right: 0.06, bottom: 0.06, left: 0.06 },
+        },
+        camera: {
+          x: 0.07,
+          y: 0.025,
+          width: 0.4,
+          height: 0.19,
+          radius: 0.22,
+          radii: { tl: 0.3, tr: 0.22, br: 0.22, bl: 0.22 },
+        },
+      };
+      await request(app.getHttpServer())
+        .post('/api/v1/products')
+        .auth(tokens[adminId], { type: 'bearer' })
+        .field('origin', 'COMPANY')
+        .field('categoryId', categoryId)
+        .field('name', 'Galaxy S24')
+        .field('deviceBrand', 'SAMSUNG')
+        .field('price', '1500')
+        .field('stock', '20')
+        .field('removeBackground', 'false')
+        .field('printAreas', JSON.stringify(printAreas))
+        .attach('file', png, 'template.png')
+        .expect(201);
+      expect(product.create.mock.calls[0][0].data.printAreas).toEqual(
+        printAreas,
+      );
+    });
+
     it('rejects an invalid corner radius and unknown print area fields', async () => {
       for (const front of [
         { x: 0, y: 0, width: 1, height: 1, radius: 0.8 },
         { x: 0, y: 0, width: 1, height: 1, bleed: 2 },
+        { x: 0, y: 0, width: 1, height: 1, bleed: 0.25 },
+        { x: 0, y: 0, width: 1, height: 1, radii: { tl: 0.1 } },
+        {
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 1,
+          safe: { top: 0.6, right: 0, bottom: 0, left: 0 },
+        },
+        { x: 0.2, y: 0, width: 0, height: 1 },
       ])
         await request(app.getHttpServer())
           .post('/api/v1/products')
@@ -243,7 +292,20 @@ describe('Phone case studio HTTP', () => {
       await design([{ subCategoryId: designId, quantity: 1, ...placed }])
         .attach('overlayImage', png, 'overlay.png')
         .expect(400);
+      // Customers can never change a model's template geometry.
+      const template = {
+        front: { x: 0, y: 0, width: 1, height: 1, bleed: 0.05 },
+      };
+      await design([{ subCategoryId: designId, quantity: 1, ...placed }])
+        .field('printAreas', JSON.stringify(template))
+        .expect(400);
+      await request(app.getHttpServer())
+        .patch(`/api/v1/products/${modelId}`)
+        .auth(tokens[ownerId], { type: 'bearer' })
+        .send({ printAreas: template })
+        .expect(403);
       expect(product.create).not.toHaveBeenCalled();
+      expect(product.update).not.toHaveBeenCalled();
     });
   });
 

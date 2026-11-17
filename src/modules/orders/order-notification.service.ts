@@ -1,4 +1,5 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { OrderStatus } from '../../generated/prisma/client.js';
 import { MailService } from '../../mail/mail.service.js';
 import type { OrderEmail, RenderedEmail } from '../../mail/mail.types.js';
@@ -7,6 +8,7 @@ import {
   orderStatusEmail,
 } from '../../mail/templates/order-status.template.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
+import { orderUrl, webAppUrl } from '../../mail/web-link.js';
 
 /** The saved order as notifications read it; the recipient is always its own customer. */
 export interface NotifiableOrder {
@@ -31,12 +33,23 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 @Injectable()
 export class OrderNotificationService {
   private readonly logger = new Logger(OrderNotificationService.name);
+  /** The website emails link to (WEB_APP_URL); null leaves the "View your order" link out. */
+  private readonly webUrl: string | null;
 
   constructor(
     @Inject(MailService) private readonly mail: MailService,
     @Inject(NotificationsService)
     private readonly notifications: NotificationsService,
-  ) {}
+    @Optional() @Inject(ConfigService) config?: ConfigService,
+  ) {
+    this.webUrl = webAppUrl(
+      (key) => config?.get<string>(key) ?? process.env[key],
+    );
+    if (!this.webUrl)
+      this.logger.warn(
+        'WEB_APP_URL is missing or invalid: order emails go out without a link to the order',
+      );
+  }
 
   /** One confirmation per placed order: one email and one "Order received" notification. */
   async notifyOrderCreated(order: NotifiableOrder): Promise<void> {
@@ -86,6 +99,7 @@ export class OrderNotificationService {
       totalPrice: order.totalPrice,
       productName: order.product?.name ?? 'Your HomeMade Creator order',
       customer: { firstName: order.user?.firstName ?? '' },
+      ...(this.webUrl ? { orderUrl: orderUrl(this.webUrl, order.id) } : {}),
     });
     try {
       await this.mail.sendMail(to, email);

@@ -26,7 +26,10 @@ export interface RenderedEmail {
   html: string;
 }
 
-/** What an order email may show: never ids, notes, payment internals or image keys. */
+/**
+ * What an order email may show: never notes, payment internals or image keys. The only id is
+ * inside `orderUrl`, the customer's own (login-protected) order page.
+ */
 export interface OrderEmail {
   orderNumber: string;
   status: OrderStatus;
@@ -34,6 +37,8 @@ export interface OrderEmail {
   totalPrice: number;
   productName: string;
   customer: { firstName: string };
+  /** Link to the order on the website; left out when no website URL is configured. */
+  orderUrl?: string;
 }
 
 export interface ContactMessage {

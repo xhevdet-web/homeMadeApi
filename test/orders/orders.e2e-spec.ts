@@ -1139,9 +1139,13 @@ describe('Orders HTTP', () => {
         expect(content).toContain('Ready for the courier');
         expect(content).toContain('€29.99');
         expect(content).not.toContain('READY_FOR_COURIER');
-        // Internal data never reaches the customer.
+        // A link to the customer's own (login-protected) order page…
+        const link = `http://localhost:5173/#/orders/${id}`;
+        expect(content).toContain(link);
+        // …is the only place the order id appears; other internal data never does.
+        const rest = content.replaceAll(link, '');
         for (const internal of [id, userId, productId, 'Internal note'])
-          expect(content).not.toContain(internal);
+          expect(rest).not.toContain(internal);
       }
     });
 

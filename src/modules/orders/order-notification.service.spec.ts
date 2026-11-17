@@ -27,6 +27,18 @@ function setup() {
 }
 
 describe('OrderNotificationService', () => {
+  it('links the email to the order on the website', async () => {
+    const { mail, service } = setup();
+    await service.notifyOrderStatusChanged(order, 'CREATING');
+    const email = mail.sendMail.mock.calls[0][1] as {
+      html: string;
+      text: string;
+    };
+    const url = `http://localhost:5173/#/orders/${order.id}`;
+    expect(email.html).toContain(`href="${url}"`);
+    expect(email.text).toContain(url);
+  });
+
   it('emails and records an in-app update for one real status change', async () => {
     const { mail, notifications, service } = setup();
     await service.notifyOrderStatusChanged(order, 'CREATING');

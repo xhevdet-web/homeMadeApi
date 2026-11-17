@@ -10,9 +10,12 @@ import {
   spacer,
 } from './layout.js';
 
-// No "View your order" button: the app has no web page or tested deep link for an order
-// yet, and email clients drop custom-scheme links. Add one when a real URL exists.
+// "View your order" opens the order on the website (an https link, which every email client
+// keeps); signed-out customers sign in there first and then land on the order.
 const FOLLOW = 'You can follow your order in the HomeMade Creator app.';
+const FOLLOW_WEB =
+  'You can follow your order on our website or in the HomeMade Creator app.';
+const VIEW_ORDER = 'View your order';
 const THANKS = 'Thank you for choosing HomeMade Creator.';
 const FOOTER =
   'You’re receiving this email because you placed an order with HomeMade Creator.';
@@ -46,6 +49,15 @@ function tracker(status: OrderStatus) {
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
 ${cells}
 </tr></table>
+</td></tr></table>`;
+}
+
+/** A bulletproof button (a table cell with a link) that renders in Outlook too. */
+function button(url: string, label: string) {
+  const href = escapeHtml(url);
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center"><tr>
+<td align="center" bgcolor="${COLORS.accent}" style="border-radius:999px;background-color:${COLORS.accent};">
+<a href="${href}" target="_blank" rel="noopener" style="display:inline-block;padding:14px 30px;font-family:${SANS};font-size:15px;line-height:20px;font-weight:bold;color:${COLORS.onNavy};text-decoration:none;border-radius:999px;">${escapeHtml(label)}</a>
 </td></tr></table>`;
 }
 
@@ -93,7 +105,10 @@ function render(
       spacer(28),
       order.html,
       spacer(28),
-      paragraph(FOLLOW, COLORS.muted),
+      ...(input.orderUrl
+        ? [button(input.orderUrl, VIEW_ORDER), spacer(24)]
+        : []),
+      paragraph(input.orderUrl ? FOLLOW_WEB : FOLLOW, COLORS.muted),
       paragraph(
         `${THANKS}<br><span style="color:${COLORS.accent};">— The HomeMade Creator team</span>`,
       ),
@@ -108,7 +123,8 @@ function render(
     ...intro.flatMap((line) => [line, '']),
     ...order.text,
     '',
-    FOLLOW,
+    ...(input.orderUrl ? [`${VIEW_ORDER}: ${input.orderUrl}`, ''] : []),
+    input.orderUrl ? FOLLOW_WEB : FOLLOW,
     '',
     THANKS,
     'The HomeMade Creator team',
