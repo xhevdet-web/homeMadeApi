@@ -51,6 +51,9 @@ describe('Gift packaging HTTP', () => {
     imageKey: 'packaging/box.png',
     price: 500,
     stock: 0,
+    capacity: null as number | null,
+    allowedTypes: [] as string[],
+    suggestedBundles: null as unknown,
     isActive: true,
     sortOrder: 1,
     colors: [pink],
@@ -315,6 +318,132 @@ describe('Gift packaging HTTP', () => {
     expect(JSON.stringify(response.body)).not.toContain('Private query data');
   });
 
+  describe('capacity, types and bundles', () => {
+    const teddyId = 'f6cf6f87-2a71-46c6-bfba-a453d847044f';
+    const teaId = 'f7cf6f87-2a71-46c6-bfba-a453d847044f';
+    const giftItem = (id: string, name: string, type: string | null) => ({
+      id,
+      name,
+      type,
+      category: { builderType: 'GIFT' },
+    });
+    const send = (body: object, id?: string) => {
+      const call = id
+        ? request(app.getHttpServer()).patch(`${base}/${id}`)
+        : request(app.getHttpServer()).post(base);
+      return call.set('Authorization', 'Bearer ' + token).send(body);
+    };
+    beforeEach(() => {
+      subCategory.findMany.mockResolvedValue([
+        giftItem(teddyId, 'Teddy', 'Toys'),
+        giftItem(teaId, 'Herbal tea', 'Drinks'),
+      ]);
+    });
+
+    it('stores capacity, cleaned types and merged bundles', async () => {
+      await send({
+        name: 'Gift Box',
+        type: 'OPAQUE',
+        capacity: 6,
+        allowedTypes: [' Toys ', 'toys', 'Drinks'],
+        suggestedBundles: [
+          {
+            name: ' Cozy night ',
+            items: [
+              { subCategoryId: teaId, quantity: 1 },
+              { subCategoryId: teaId, quantity: 1 },
+              { subCategoryId: teddyId, quantity: 1 },
+            ],
+          },
+        ],
+      }).expect(201);
+      expect(giftPackaging.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            capacity: 6,
+            allowedTypes: ['Toys', 'Drinks'],
+            suggestedBundles: [
+              {
+                name: 'Cozy night',
+                items: [
+                  { subCategoryId: teaId, quantity: 2 },
+                  { subCategoryId: teddyId, quantity: 1 },
+                ],
+              },
+            ],
+          }),
+        }),
+      );
+    });
+
+    it('rejects bundles that do not fit, are not gift items or repeat a name', async () => {
+      const bundle = (quantity: number, name = 'Big') => ({
+        name,
+        items: [{ subCategoryId: teddyId, quantity }],
+      });
+      const tooBig = await send({
+        name: 'Gift Box',
+        type: 'OPAQUE',
+        capacity: 2,
+        suggestedBundles: [bundle(3)],
+      }).expect(400);
+      expect(tooBig.body.message).toBe(
+        '"Big" has 3 items, but Gift Box holds 2 items',
+      );
+      await send({
+        name: 'Gift Box',
+        type: 'OPAQUE',
+        allowedTypes: ['Drinks'],
+        suggestedBundles: [bundle(1)],
+      }).expect(400);
+      await send({
+        name: 'Gift Box',
+        type: 'OPAQUE',
+        suggestedBundles: [bundle(1, 'Same'), bundle(1, 'same')],
+      }).expect(400);
+      subCategory.findMany.mockResolvedValue([
+        {
+          ...giftItem(teddyId, 'Teddy', 'Toys'),
+          category: { builderType: 'MUG' },
+        },
+      ]);
+      await send({
+        name: 'Gift Box',
+        type: 'OPAQUE',
+        suggestedBundles: [bundle(1)],
+      }).expect(400);
+      expect(giftPackaging.create).not.toHaveBeenCalled();
+    });
+
+    it('checks stored bundles again when the capacity shrinks', async () => {
+      giftPackaging.findUnique.mockResolvedValue({
+        ...box,
+        capacity: 6,
+        suggestedBundles: [
+          { name: 'Cozy', items: [{ subCategoryId: teddyId, quantity: 4 }] },
+        ],
+      });
+      await send({ capacity: 3 }, boxId).expect(400);
+      await send({ capacity: 4 }, boxId).expect(200);
+      // Unrelated edits never re-check bundles.
+      subCategory.findMany.mockClear();
+      await send({ price: 700 }, boxId).expect(200);
+      expect(subCategory.findMany).not.toHaveBeenCalled();
+    });
+
+    it('clears the capacity and bundles with null', async () => {
+      await send({ capacity: null, suggestedBundles: null }, boxId).expect(200);
+      expect(giftPackaging.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            capacity: null,
+            suggestedBundles: Prisma.DbNull,
+          }),
+        }),
+      );
+    });
+  });
+
   describe('gift designs', () => {
     const products = '/api/v1/products';
     const design = {
@@ -423,6 +552,131 @@ describe('Gift packaging HTTP', () => {
         .send({ ...design, giftPackagingId: transparentId })
         .expect(400);
       expect(product.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects more items than the packaging holds, counting quantities', async () => {
+      giftPackaging.findUnique.mockResolvedValue({
+        ...transparent,
+        capacity: 2,
+      });
+      const response = await request(app.getHttpServer())
+        .post(products)
+        .set('Authorization', 'Bearer ' + token)
+        .send({
+          ...design,
+          giftPackagingId: transparentId,
+          items: [{ subCategoryId, quantity: 3, position: 0, x: 0.5, y: 0.5 }],
+        })
+        .expect(400);
+      expect(response.body.message).toBe(
+        'Transparent Box holds up to 2 items; remove 1 item to fit',
+      );
+      expect(product.create).not.toHaveBeenCalled();
+    });
+
+    it('accepts only the item types the packaging allows', async () => {
+      giftPackaging.findUnique.mockResolvedValue({
+        ...transparent,
+        allowedTypes: ['Treats'],
+      });
+      await request(app.getHttpServer())
+        .post(products)
+        .set('Authorization', 'Bearer ' + token)
+        .send({ ...design, giftPackagingId: transparentId })
+        .expect(400);
+      giftPackaging.findUnique.mockResolvedValue({
+        ...transparent,
+        allowedTypes: ['item'],
+      });
+      await request(app.getHttpServer())
+        .post(products)
+        .set('Authorization', 'Bearer ' + token)
+        .send({ ...design, giftPackagingId: transparentId })
+        .expect(201);
+    });
+
+    it('stores the gift card trimmed, for gift designs only', async () => {
+      await request(app.getHttpServer())
+        .post(products)
+        .set('Authorization', 'Bearer ' + token)
+        .send({
+          ...design,
+          giftPackagingId: transparentId,
+          giftRecipient: '  Mom ',
+          giftMessage: ' Happy birthday!\r\nLove you ',
+        })
+        .expect(201);
+      expect(product.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            giftRecipient: 'Mom',
+            giftMessage: 'Happy birthday!\nLove you',
+          }),
+        }),
+      );
+      await request(app.getHttpServer())
+        .post(products)
+        .set('Authorization', 'Bearer ' + token)
+        .send({ ...design, giftMessage: 'x'.repeat(201) })
+        .expect(400);
+      category.findUnique.mockResolvedValue({
+        id: categoryId,
+        builderType: 'BOUQUET',
+        builderConfig: null,
+        designCategoryId: null,
+      });
+      await request(app.getHttpServer())
+        .post(products)
+        .set('Authorization', 'Bearer ' + token)
+        .send({ ...design, giftMessage: 'Hi' })
+        .expect(400);
+    });
+
+    it('shows the gift card only to its creator and admins', async () => {
+      const id = 'e1dfc7b7-2a71-46c6-bfba-a453d847044f';
+      const gift = (createdById: string) => ({
+        id,
+        origin: 'CUSTOMER',
+        createdById,
+        categoryId,
+        name: 'Birthday Gift',
+        price: 1200,
+        giftRecipient: 'Mom',
+        giftMessage: 'Happy birthday!',
+        category: { builderType: 'GIFT' },
+        items: [],
+      });
+      product.findUnique.mockResolvedValue(
+        gift('9f0e8d7c-2a71-46c6-bfba-a453d847044f'),
+      );
+      const other = await request(app.getHttpServer())
+        .get(`${products}/${id}`)
+        .set('Authorization', 'Bearer ' + token)
+        .expect(200);
+      expect(other.body).toMatchObject({
+        giftRecipient: null,
+        giftMessage: null,
+      });
+      const anonymous = await request(app.getHttpServer())
+        .get(`${products}/${id}`)
+        .expect(200);
+      expect(anonymous.body.giftMessage).toBeNull();
+      signedIn('ADMIN');
+      const admin = await request(app.getHttpServer())
+        .get(`${products}/${id}`)
+        .set('Authorization', 'Bearer ' + token)
+        .expect(200);
+      expect(admin.body.giftRecipient).toBe('Mom');
+      signedIn('CUSTOMER');
+      product.findUnique.mockResolvedValue(gift(userId));
+      const own = await request(app.getHttpServer())
+        .get(`${products}/${id}`)
+        .set('Authorization', 'Bearer ' + token)
+        .expect(200);
+      expect(own.body).toMatchObject({
+        giftRecipient: 'Mom',
+        giftMessage: 'Happy birthday!',
+      });
     });
 
     it('keeps designs without packaging unchanged', async () => {

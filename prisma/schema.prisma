@@ -230,6 +230,10 @@ model Product {
   giftPackagingColorId String? @map("gift_packaging_color_id")
   // Snapshot in cents of the packaging price plus the colour's adjustment, like basePrice.
   packagingPrice       Int     @default(0) @map("packaging_price")
+  // CUSTOMER GIFT designs: the card that comes with the gift. Private: only the creator and
+  // admins read it. Frozen into the order snapshot when ordered.
+  giftRecipient        String? @map("gift_recipient")
+  giftMessage          String? @map("gift_message")
 
   // Total number of components used, calculated from ProductItems.
   itemCount Int @default(0) @map("item_count")
@@ -285,6 +289,17 @@ model GiftPackaging {
   // Inventory of packaging without colours (TRANSPARENT). Packaging with colours keeps
   // its stock per colour instead.
   stock Int @default(0)
+
+  // How many items fit inside: the slots of the Gift Studio. A design may not hold more
+  // (the sum of its item quantities; text is not an item). Null: no limit.
+  capacity         Int?
+  // Item types (SubCategory.type, e.g. "Treats") this packaging accepts, matched without
+  // regard to case. Empty: every type.
+  allowedTypes     String[] @default([]) @map("allowed_types")
+  // Ready combinations offered in the Gift Studio, checked against capacity and types when
+  // saved: [{ "name": "Cozy night in", "items": [{ "subCategoryId": "…", "quantity": 1 }] }].
+  // Items deleted later are skipped by the clients. Null: none.
+  suggestedBundles Json?    @map("suggested_bundles")
 
   isActive  Boolean @default(true) @map("is_active")
   sortOrder Int     @default(0) @map("sort_order")

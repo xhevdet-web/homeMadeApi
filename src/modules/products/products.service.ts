@@ -59,6 +59,7 @@ import {
   recentCommunityOrders,
 } from './community-creations.js';
 import {
+  assertGiftContents,
   giftPackagingColorSelect,
   giftPackagingFields,
   giftPackagingSelect,
@@ -117,6 +118,44 @@ type Listed = {
  * Phone case designs usually carry a customer's personal photo, so they are private: only
  * their creator and admins can see them. Every other product keeps its existing visibility.
  */
+/**
+ * A gift card (recipient and message) is personal: only the design's creator and admins
+ * read it. Everyone else gets the design without it.
+ */
+function withPrivateNote<
+  T extends {
+    createdById: string;
+    giftRecipient: string | null;
+    giftMessage: string | null;
+  },
+>(product: T, viewer: Viewer): T {
+  if (viewer?.role === 'ADMIN' || viewer?.id === product.createdById)
+    return product;
+  if (product.giftRecipient === null && product.giftMessage === null)
+    return product;
+  return { ...product, giftRecipient: null, giftMessage: null };
+}
+
+/** The gift card fields to store; only CUSTOMER GIFT designs may carry one. */
+function giftNote(
+  design: { builderType: string | null; company: boolean },
+  dto: { giftRecipient?: string | null; giftMessage?: string | null },
+) {
+  if (
+    (dto.giftRecipient || dto.giftMessage) &&
+    (design.company || design.builderType !== 'GIFT')
+  )
+    throw new BadRequestException(
+      'Only customer gift designs can have a gift card',
+    );
+  return {
+    ...(dto.giftRecipient !== undefined
+      ? { giftRecipient: dto.giftRecipient }
+      : {}),
+    ...(dto.giftMessage !== undefined ? { giftMessage: dto.giftMessage } : {}),
+  };
+}
+
 function visibleTo(product: Listed, viewer: Viewer) {
   if (product.origin !== 'CUSTOMER') return true;
   if (product.category?.builderType !== CASE_BUILDER) return true;
@@ -247,6 +286,11 @@ export class ProductsService {
                   { builderType: category.builderType, company },
                   dto.giftPackagingId,
                   dto.giftPackagingColorId,
+                  calculated.items,
+                );
+                const note = giftNote(
+                  { builderType: category.builderType, company },
+                  dto,
                 );
                 if (
                   calculated.price + basePrice + packaging.packagingPrice >
@@ -298,6 +342,7 @@ export class ProductsService {
                     stock: inventory?.stock ?? 0,
                     basePrice,
                     ...packaging,
+                    ...note,
                     isActive: dto.isActive,
                     price: company
                       ? dto.price
@@ -402,7 +447,10 @@ export class ProductsService {
           : ready + custom;
     return {
       // A product deleted between the two reads is simply left out.
-      data: order.flatMap((id) => byId.get(id) ?? []),
+      data: order.flatMap((id) => {
+        const product = byId.get(id);
+        return product ? [withPrivateNote(product, viewer)] : [];
+      }),
       meta: {
         page,
         limit,
@@ -432,7 +480,8 @@ export class ProductsService {
         .map(({ id, updatedAt, product }) => ({
           completedOrderId: id,
           completedOrderUpdatedAt: updatedAt,
-          product,
+          // Other customers' creations: never their gift cards.
+          product: withPrivateNote(product, undefined),
         })),
     };
   }
@@ -495,7 +544,7 @@ export class ProductsService {
     // A private design reads as missing, so its id reveals nothing to other customers.
     if (!product || !visibleTo(product, viewer))
       throw new NotFoundException('Product not found');
-    return product;
+    return withPrivateNote(product, viewer);
   }
 
   async findByCategory(categoryId: string, viewer?: Viewer) {
@@ -582,6 +631,10 @@ export class ProductsService {
                   ? undefined
                   : this.textLayers(category, dto.textLayers);
               const company = product.origin === 'COMPANY';
+              const note = giftNote(
+                { builderType: category.builderType, company },
+                dto,
+              );
               const sticker =
                 !company && category.builderType === STICKER_BUILDER
                   ? (stickerSize(product.selectedSize) ?? undefined)
@@ -629,6 +682,7 @@ export class ProductsService {
                 designPreviewKey: previewKey,
                 backDesignPreviewKey: backPreviewKey,
                 isActive: dto.isActive,
+                ...note,
                 textLayers:
                   textLayers === undefined
                     ? undefined
@@ -721,6 +775,8 @@ export class ProductsService {
                   dto.selectedSizeId !== undefined ||
                   dto.selectedMeasurementMm !== undefined ||
                   dto.textLayers !== undefined ||
+                  dto.giftRecipient !== undefined ||
+                  dto.giftMessage !== undefined ||
                   (dto.categoryId !== undefined &&
                     dto.categoryId !== product.categoryId)
                 )
@@ -752,6 +808,14 @@ export class ProductsService {
                   [],
                   sticker,
                 );
+                // A gift's items must still fit the packaging it was created with.
+                if (product.giftPackagingId) {
+                  const fit = await tx.giftPackaging.findUnique({
+                    where: { id: product.giftPackagingId },
+                    select: { name: true, capacity: true, allowedTypes: true },
+                  });
+                  if (fit) await assertGiftContents(tx, fit, calculated.items);
+                }
                 data.category = { connect: { id: categoryId } };
                 // Base product and packaging prices were snapshotted when the design was created.
                 data.price =
@@ -939,7 +1003,9 @@ export class ProductsService {
         orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       }),
     );
-    return products.filter((product) => visibleTo(product, viewer));
+    return products
+      .filter((product) => visibleTo(product, viewer))
+      .map((product) => withPrivateNote(product, viewer));
   }
 
   /**

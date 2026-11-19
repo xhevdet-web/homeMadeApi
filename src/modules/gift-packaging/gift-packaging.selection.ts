@@ -10,6 +10,8 @@ const packagingSelect = {
   imageKey: true,
   price: true,
   stock: true,
+  capacity: true,
+  allowedTypes: true,
   isActive: true,
   colors: {
     select: {
@@ -37,6 +39,7 @@ export const giftPackagingSelect = {
   shape: true,
   imageKey: true,
   price: true,
+  capacity: true,
   isActive: true,
 } satisfies Prisma.GiftPackagingSelect;
 
@@ -92,15 +95,60 @@ const stockOf = ({ packaging, color }: Awaited<ReturnType<typeof resolve>>) =>
 const label = ({ packaging, color }: Awaited<ReturnType<typeof resolve>>) =>
   color ? `${packaging.name} in ${color.name}` : packaging.name;
 
+const items = (count: number) => `${count} item${count === 1 ? '' : 's'}`;
+
+/** Item types are free text typed by the admin, so they match without regard to case or spaces. */
+export const typeKey = (type: string | null | undefined) =>
+  (type ?? '').trim().toLowerCase();
+
+export interface GiftFit {
+  name: string;
+  capacity: number | null;
+  allowedTypes: string[];
+}
+
+/**
+ * What goes inside must fit the packaging: no more items than its capacity (quantities add
+ * up; text is not an item) and, when it names allowed types, only items of those types.
+ */
+export async function assertGiftContents(
+  tx: Prisma.TransactionClient,
+  packaging: GiftFit,
+  contents: { subCategoryId: string; quantity: number }[],
+) {
+  const count = contents.reduce((sum, item) => sum + item.quantity, 0);
+  if (packaging.capacity !== null && count > packaging.capacity)
+    throw new BadRequestException(
+      `${packaging.name} holds up to ${items(packaging.capacity)}; remove ${items(count - packaging.capacity)} to fit`,
+    );
+  const allowed = new Set(packaging.allowedTypes.map(typeKey));
+  if (!allowed.size || !contents.length) return;
+  const components = await tx.subCategory.findMany({
+    where: {
+      id: { in: [...new Set(contents.map((item) => item.subCategoryId))] },
+    },
+    select: { name: true, type: true },
+    orderBy: { name: 'asc' },
+  });
+  const misfit = components.find(
+    (component) => !allowed.has(typeKey(component.type)),
+  );
+  if (misfit)
+    throw new BadRequestException(
+      `${misfit.name} does not fit in ${packaging.name}`,
+    );
+}
+
 /**
  * Fields a new design stores. Only CUSTOMER GIFT designs may have packaging; every other
- * product keeps all three empty.
+ * product keeps all three empty. The design's items must fit the chosen packaging.
  */
 export async function giftPackagingFields(
   tx: Prisma.TransactionClient,
   design: { builderType: string | null; company: boolean },
   packagingId: string | undefined,
   colorId: string | undefined,
+  contents: { subCategoryId: string; quantity: number }[] = [],
 ) {
   if (!packagingId) {
     if (colorId)
@@ -118,6 +166,7 @@ export async function giftPackagingFields(
   const selection = await resolve(tx, packagingId, colorId);
   if (stockOf(selection) < 1)
     throw new BadRequestException(`${label(selection)} is sold out`);
+  await assertGiftContents(tx, selection.packaging, contents);
   return {
     giftPackagingId: selection.packaging.id,
     giftPackagingColorId: selection.color?.id ?? null,

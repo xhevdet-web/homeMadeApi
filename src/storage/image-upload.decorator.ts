@@ -57,6 +57,7 @@ class MultipartFieldsInterceptor implements NestInterceptor {
         'priceAdjustment',
         'effectiveLengthMm',
         'selectedMeasurementMm',
+        'capacity',
       ]) {
         const value = body[field];
         if (typeof value === 'string' && /^-?\d+$/.test(value))
@@ -77,6 +78,8 @@ class MultipartFieldsInterceptor implements NestInterceptor {
         'textLayers',
         'builderConfig',
         'printAreas',
+        'allowedTypes',
+        'suggestedBundles',
       ]) {
         if (typeof body[field] === 'string') {
           try {
@@ -192,6 +195,20 @@ export function ImageUpload(
       description:
         'A colour of the chosen closed packaging; required when it has colours, never for transparent packaging.',
     };
+    properties.giftRecipient = {
+      type: 'string',
+      maxLength: 60,
+      nullable: true,
+      description:
+        'CUSTOMER GIFT only: who the gift card is for, e.g. "Mom". Private to the creator and admins.',
+    };
+    properties.giftMessage = {
+      type: 'string',
+      maxLength: 200,
+      nullable: true,
+      description:
+        'CUSTOMER GIFT only: the message on the gift card. Private to the creator and admins.',
+    };
   }
   if (entity === 'giftPackaging')
     Object.assign(properties, {
@@ -207,6 +224,31 @@ export function ImageUpload(
         type: 'integer',
         minimum: 0,
         description: 'Stock of packaging without colours.',
+      },
+      capacity: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 100,
+        nullable: true,
+        description:
+          'How many items fit inside (the Gift Studio slots). Empty or null: no limit.',
+      },
+      allowedTypes: {
+        description:
+          'Item types (sub-category type) it accepts, e.g. ["Treats","Decor"]; [] accepts every type. Multipart: JSON.stringify(allowedTypes).',
+        oneOf: [
+          { type: 'string' },
+          { type: 'array', items: { type: 'string' } },
+        ],
+      },
+      suggestedBundles: {
+        description:
+          'Suggested combinations [{ name, items: [{ subCategoryId, quantity }] }], checked against capacity and types; null removes them. Multipart: JSON.stringify(suggestedBundles).',
+        nullable: true,
+        oneOf: [
+          { type: 'string' },
+          { type: 'array', items: { type: 'object' } },
+        ],
       },
     });
   if (entity === 'giftPackagingColor') {

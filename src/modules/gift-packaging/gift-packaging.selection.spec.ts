@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import type { Prisma } from '../../generated/prisma/client.js';
 import {
+  assertGiftContents,
   giftPackagingFields,
   takeGiftPackagingStock,
 } from './gift-packaging.selection.js';
@@ -19,6 +20,8 @@ const transparent = {
   imageKey: null,
   price: 400,
   stock: 20,
+  capacity: null,
+  allowedTypes: [],
   isActive: true,
   colors: [],
 };
@@ -40,6 +43,8 @@ const box = {
   imageKey: null,
   price: 500,
   stock: 0,
+  capacity: null,
+  allowedTypes: [],
   isActive: true,
   colors: [
     color(pinkId, 'Pink'),
@@ -188,5 +193,88 @@ describe('takeGiftPackagingStock', () => {
     await expect(
       takeGiftPackagingStock(asTx(db), boxId, goldId),
     ).rejects.toThrow('no longer available');
+  });
+});
+
+describe('assertGiftContents', () => {
+  const teddy = 'f0000000-0000-4000-8000-000000000006';
+  const tea = 'f0000000-0000-4000-8000-000000000007';
+  const components = (rows: { name: string; type: string | null }[]) =>
+    ({
+      subCategory: { findMany: vi.fn().mockResolvedValue(rows) },
+    }) as unknown as Prisma.TransactionClient;
+  const fit = (overrides: object = {}) => ({
+    name: 'Classic Closed Box',
+    capacity: 6,
+    allowedTypes: [] as string[],
+    ...overrides,
+  });
+
+  it('accepts contents up to the capacity, counting quantities', async () => {
+    await expect(
+      assertGiftContents(components([]), fit(), [
+        { subCategoryId: teddy, quantity: 4 },
+        { subCategoryId: tea, quantity: 2 },
+      ]),
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects more items than fit and says how many to remove', async () => {
+    await expect(
+      assertGiftContents(components([]), fit(), [
+        { subCategoryId: teddy, quantity: 5 },
+        { subCategoryId: tea, quantity: 2 },
+      ]),
+    ).rejects.toThrow(
+      new BadRequestException(
+        'Classic Closed Box holds up to 6 items; remove 1 item to fit',
+      ),
+    );
+  });
+
+  it('has no limit without a capacity', async () => {
+    await expect(
+      assertGiftContents(components([]), fit({ capacity: null }), [
+        { subCategoryId: teddy, quantity: 500 },
+      ]),
+    ).resolves.toBeUndefined();
+  });
+
+  it('matches allowed types without regard to case or spaces', async () => {
+    const client = components([{ name: 'Teddy', type: ' treats ' }]);
+    await expect(
+      assertGiftContents(client, fit({ allowedTypes: ['Treats'] }), [
+        { subCategoryId: teddy, quantity: 1 },
+      ]),
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects an item whose type the packaging does not accept', async () => {
+    const client = components([
+      { name: 'Herbal tea', type: 'Drinks' },
+      { name: 'Teddy', type: null },
+    ]);
+    await expect(
+      assertGiftContents(client, fit({ allowedTypes: ['Drinks'] }), [
+        { subCategoryId: tea, quantity: 1 },
+        { subCategoryId: teddy, quantity: 1 },
+      ]),
+    ).rejects.toThrow(
+      new BadRequestException('Teddy does not fit in Classic Closed Box'),
+    );
+  });
+
+  it('skips the type lookup when every type is accepted', async () => {
+    const client = components([]);
+    await assertGiftContents(client, fit(), [
+      { subCategoryId: teddy, quantity: 1 },
+    ]);
+    expect(
+      (
+        client as unknown as {
+          subCategory: { findMany: ReturnType<typeof vi.fn> };
+        }
+      ).subCategory.findMany,
+    ).not.toHaveBeenCalled();
   });
 });

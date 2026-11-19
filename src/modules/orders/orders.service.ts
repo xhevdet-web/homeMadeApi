@@ -229,6 +229,8 @@ export class OrdersService {
                 giftPackagingId: true,
                 giftPackagingColorId: true,
                 packagingPrice: true,
+                giftRecipient: true,
+                giftMessage: true,
                 category: {
                   select: {
                     id: true,
@@ -492,6 +494,9 @@ export class OrdersService {
                   : (product.selectedSize ?? null),
               // Personalised gift text, printed exactly as ordered.
               textLayers: product.textLayers ?? null,
+              // The gift card that goes with the gift, as written when ordered.
+              giftRecipient: product.giftRecipient,
+              giftMessage: product.giftMessage,
               stock: product.stock ?? 0,
               name: product.name,
               description: product.description,

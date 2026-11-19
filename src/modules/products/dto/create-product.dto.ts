@@ -12,6 +12,7 @@ import {
   IsUUID,
   Length,
   Matches,
+  MaxLength,
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
@@ -25,6 +26,11 @@ const trim = ({ value }: { value: unknown }) =>
 // Multipart cannot carry null, so clients send "" to clear nullable fields.
 export const emptyToNull = ({ value }: { value: unknown }) =>
   value === '' ? null : value;
+// Gift card text: trimmed, Windows line breaks normalised; blank means none.
+const noteText = ({ value }: { value: unknown }) =>
+  typeof value === 'string'
+    ? value.replace(/\r\n?/g, '\n').trim() || null
+    : value;
 
 export class CreateProductDto {
   /** COMPANY is the admin catalog; CUSTOMER (default) is a Creative Studio design. */
@@ -144,6 +150,20 @@ export class CreateProductDto {
   @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsUUID()
   giftPackagingColorId?: string;
+
+  /** GIFT designs: who the gift card is for, e.g. "Mom". "" or null: no recipient. */
+  @Transform(noteText)
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  giftRecipient?: string | null;
+
+  /** GIFT designs: the message on the gift card. "" or null: no message. */
+  @Transform(noteText)
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  giftMessage?: string | null;
 
   /** A size of the base product, or of the category's studio size presets. */
   @ValidateIf((_object, value: unknown) => value !== undefined)
